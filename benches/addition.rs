@@ -146,24 +146,30 @@ pub fn criterion_benchmark(c: &mut Criterion) {
 
     let (msgr_to_cmdr, cmdr_from_msgr) = flume::bounded(1);
     let (cmdr_to_msgr, msgr_from_cmdr) = flume::bounded(1);
-    let flume_thread = std::thread::spawn(move || pasts::block_on(async move {
-        while let Ok(command) = msgr_from_cmdr.recv_async().await {
-            match command {
-                channel::Cmd::Add(a, b) => if msgr_to_cmdr.send_async(a + b).await.is_err() {
-                    break
-                },
-                channel::Cmd::Exit => break,
+    let flume_thread = std::thread::spawn(move || {
+        pasts::block_on(async move {
+            while let Ok(command) = msgr_from_cmdr.recv_async().await {
+                match command {
+                    channel::Cmd::Add(a, b) => {
+                        if msgr_to_cmdr.send_async(a + b).await.is_err() {
+                            break;
+                        }
+                    }
+                    channel::Cmd::Exit => break,
+                }
             }
-        }
-    }));
+        })
+    });
     let (msgr_to_cmdr_task, cmdr_from_msgr_task) = flume::bounded(1);
     let (cmdr_to_msgr_task, msgr_from_cmdr_task) = flume::bounded(1);
     let mut flume_task = Box::pin(async move {
         while let Ok(command) = msgr_from_cmdr_task.recv_async().await {
             match command {
-                channel::Cmd::Add(a, b) => if msgr_to_cmdr_task.send_async(a + b).await.is_err() {
-                    break
-                },
+                channel::Cmd::Add(a, b) => {
+                    if msgr_to_cmdr_task.send_async(a + b).await.is_err() {
+                        break;
+                    }
+                }
                 channel::Cmd::Exit => break,
             }
         }
@@ -258,17 +264,27 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     });
 
     // Flume comparisons
-    let args: *mut _ = &mut (453, 198_231_014, &cmdr_from_msgr_task, &cmdr_to_msgr_task, &mut flume_task);
+    let args: *mut _ = &mut (
+        453,
+        198_231_014,
+        &cmdr_from_msgr_task,
+        &cmdr_to_msgr_task,
+        &mut flume_task,
+    );
     c.bench_with_input(BenchmarkId::new("flume", "call"), &args, |z, args| {
         use futures::FutureExt;
 
         // Insert a call to `to_async` to convert the bencher to async mode.
         // The timing loops are the same as with the normal bencher.
         z.to_async(FuturesExecutor).iter(|| async {
-            let (a, b, cmdr_from_msgr, cmdr_to_msgr, g) = unsafe { &mut **args };
+            let (a, b, cmdr_from_msgr, cmdr_to_msgr, g) =
+                unsafe { &mut **args };
 
             let f = async {
-                cmdr_to_msgr.send_async(channel::Cmd::Add(*a, *b)).await.unwrap();
+                cmdr_to_msgr
+                    .send_async(channel::Cmd::Add(*a, *b))
+                    .await
+                    .unwrap();
                 cmdr_from_msgr.recv_async().await.unwrap()
             };
             futures::pin_mut!(f);
@@ -292,7 +308,10 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             z.to_async(FuturesExecutor).iter(|| async {
                 let (a, b, cmdr_from_msgr, cmdr_to_msgr) = *args;
 
-                cmdr_to_msgr.send_async(channel::Cmd::Add(a, b)).await.unwrap();
+                cmdr_to_msgr
+                    .send_async(channel::Cmd::Add(a, b))
+                    .await
+                    .unwrap();
                 cmdr_from_msgr.recv_async().await.unwrap()
             });
         },
