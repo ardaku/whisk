@@ -3,15 +3,40 @@
 //! The idea is based on a concept of calling a function on a different task.
 //!
 //! # Getting Started
-//! 
+//!
 
-use std::{
-    sync::atomic::{AtomicBool, Ordering},
-    task::{Context, Waker, Poll},
+#![no_std]
+#![doc(
+    html_logo_url = "https://ardaku.github.io/mm/logo.svg",
+    html_favicon_url = "https://ardaku.github.io/mm/icon.svg",
+    html_root_url = "https://docs.rs/whisk"
+)]
+#![warn(
+    anonymous_parameters,
+    missing_copy_implementations,
+    missing_debug_implementations,
+    missing_docs,
+    nonstandard_style,
+    rust_2018_idioms,
+    single_use_lifetimes,
+    trivial_casts,
+    trivial_numeric_casts,
+    unreachable_pub,
+    unused_extern_crates,
+    unused_qualifications,
+    variant_size_differences
+)]
+
+extern crate alloc;
+
+use alloc::boxed::Box;
+use core::{
     future::Future,
-    mem::ManuallyDrop,
-    pin::Pin,
     marker::PhantomData,
+    mem::{self, ManuallyDrop},
+    pin::Pin,
+    sync::atomic::{AtomicBool, Ordering},
+    task::{Context, Poll, Waker},
 };
 
 struct Owner(AtomicBool);
@@ -40,6 +65,7 @@ struct Internal<Command, Message> {
 }
 
 /// A commander tells the messenger what to do.
+#[derive(Debug)]
 pub struct Commander<Command, Message>(*mut Internal<Command, Message>);
 
 unsafe impl<Command: Send, Message: Send> Send for Commander<Command, Message> {}
@@ -85,12 +111,8 @@ impl<Command, Message> Drop for Commander<Command, Message> {
     #[inline(always)]
     fn drop(&mut self) {
         unsafe {
-            println!("Commander spin lock begin");
-
             // Wait for message from messenger
             while (*self.0).owner.0.load(Ordering::Acquire) != COMMANDER {}
-
-            println!("Commander spin lock end");
 
             if (*self.0).leased {
                 // Panic so that `Command` can't use-after-free.
@@ -112,6 +134,7 @@ impl<Command, Message> Drop for Commander<Command, Message> {
 }
 
 /// A messenger reports the results of tasks the commander assigned.
+#[derive(Debug)]
 pub struct Messenger<Command, Message>(*mut Internal<Command, Message>);
 
 unsafe impl<Command: Send, Message: Send> Send for Messenger<Command, Message> {}
@@ -157,11 +180,8 @@ impl<Command, Message> Drop for Messenger<Command, Message> {
     #[inline(always)]
     fn drop(&mut self) {
         unsafe {
-            println!("Messenger spin lock begin");
-
             // Wait for command from commander
             while (*self.0).owner.0.load(Ordering::Acquire) != MESSENGER {}
-            println!("Messenger spin lock end");
 
             if (*self.0).leased {
                 // Panic so that `Message` can't use-after-free.
@@ -185,7 +205,9 @@ impl<Command, Message> Drop for Messenger<Command, Message> {
 struct Channel<Command: Unpin, Message: Unpin>(Option<Message>, PhantomData<Command>);
 
 impl<Cmd, Msg> Future for Channel<Cmd, Msg>
-    where Cmd: Unpin, Msg: Unpin
+where
+    Cmd: Unpin,
+    Msg: Unpin,
 {
     type Output = (Commander<Cmd, Msg>, Messenger<Cmd, Msg>);
 
@@ -196,7 +218,9 @@ impl<Cmd, Msg> Future for Channel<Cmd, Msg>
             owner: Owner(AtomicBool::new(MESSENGER)),
             leased: false,
             waker: Some(waker),
-            data: Some(Data { message: ManuallyDrop::new(self.0.take().unwrap()) }),
+            data: Some(Data {
+                message: ManuallyDrop::new(self.0.take().unwrap()),
+            }),
         };
         let internal = Box::leak(Box::new(internal));
         let output = (Commander(internal), Messenger(internal));
@@ -210,14 +234,19 @@ impl<Cmd, Msg> Future for Channel<Cmd, Msg>
 /// Should be called on commander task.  Usually, the first message from the
 /// messenger task will be Ready for commands.
 #[inline(always)]
-pub fn channel<Command, Message>(ready: Message) -> impl Future<Output = (Commander<Command, Message>, Messenger<Command, Message>)>
-    where Command: Unpin, Message: Unpin
+pub fn channel<Command, Message>(
+    ready: Message,
+) -> impl Future<Output = (Commander<Command, Message>, Messenger<Command, Message>)>
+where
+    Command: Unpin,
+    Message: Unpin,
 {
     Channel(Some(ready), PhantomData)
 }
 
 /// Communication from the [`Commander`].
 #[must_use]
+#[derive(Debug)]
 pub struct Command<Cmd, Msg> {
     waker: ManuallyDrop<Waker>,
     inner: ManuallyDrop<Cmd>,
@@ -241,7 +270,10 @@ impl<Cmd, Msg> Command<Cmd, Msg> {
             }
 
             // Release control to commander
-            (*command.internal).owner.0.store(COMMANDER, Ordering::Release);
+            (*command.internal)
+                .owner
+                .0
+                .store(COMMANDER, Ordering::Release);
             ManuallyDrop::take(&mut command.waker).wake();
 
             // Manual drop of inner
@@ -249,7 +281,7 @@ impl<Cmd, Msg> Command<Cmd, Msg> {
         }
 
         // Forget self
-        std::mem::forget(command);
+        mem::forget(command);
     }
 
     /// Respond by closing the channel.
@@ -262,17 +294,21 @@ impl<Cmd, Msg> Command<Cmd, Msg> {
             // Manual drop of inner
             let _ = ManuallyDrop::take(&mut command.inner);
             // Release control to commander
-            (*command.internal).owner.0.store(COMMANDER, Ordering::Release);
+            (*command.internal)
+                .owner
+                .0
+                .store(COMMANDER, Ordering::Release);
             ManuallyDrop::take(&mut command.waker).wake();
         }
 
         // Forget self
-        std::mem::forget(command);
+        mem::forget(command);
     }
 }
 
 /// Communication from the [`Messenger`].
 #[must_use]
+#[derive(Debug)]
 pub struct Message<Cmd, Msg> {
     waker: ManuallyDrop<Waker>,
     inner: ManuallyDrop<Msg>,
@@ -296,7 +332,10 @@ impl<Cmd, Msg> Message<Cmd, Msg> {
             }
 
             // Release control to messenger
-            (*message.internal).owner.0.store(MESSENGER, Ordering::Release);
+            (*message.internal)
+                .owner
+                .0
+                .store(MESSENGER, Ordering::Release);
             ManuallyDrop::take(&mut message.waker).wake();
 
             // Manual drop of inner
@@ -304,7 +343,7 @@ impl<Cmd, Msg> Message<Cmd, Msg> {
         }
 
         // Forget self
-        std::mem::forget(message);
+        mem::forget(message);
     }
 
     /// Respond by closing the channel.
@@ -317,11 +356,14 @@ impl<Cmd, Msg> Message<Cmd, Msg> {
             // Manual drop of inner
             let _ = ManuallyDrop::take(&mut message.inner);
             // Release control to messenger
-            (*message.internal).owner.0.store(MESSENGER, Ordering::Release);
+            (*message.internal)
+                .owner
+                .0
+                .store(MESSENGER, Ordering::Release);
             ManuallyDrop::take(&mut message.waker).wake();
         }
 
         // Forget self
-        std::mem::forget(message);
+        mem::forget(message);
     }
 }

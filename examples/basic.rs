@@ -6,7 +6,7 @@ enum Msg {
 }
 
 enum Cmd {
-    /// Tell messenger to quit 
+    /// Tell messenger to quit
     Exit,
 }
 
@@ -17,9 +17,9 @@ async fn messenger_task(mut messenger: Messenger<Cmd, Msg>) {
     let command = (&mut messenger).await.unwrap();
     match command.get() {
         Cmd::Exit => {
-            println!("Shutting down messenger....");
+            println!("Messenger received exit, shutting down....");
             command.close(messenger)
-        },
+        }
     }
 }
 
@@ -37,7 +37,7 @@ async fn commander_task() {
             Msg::Ready => {
                 println!("Received ready, telling messenger to exit....");
                 message.respond(Cmd::Exit)
-            },
+            }
         }
     }
     println!("Messenger has exited, now too shall the commander");
