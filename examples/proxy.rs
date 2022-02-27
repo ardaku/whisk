@@ -41,11 +41,9 @@ impl Proxy {
 async fn messenger_task(mut messenger: Messenger<Cmd, Msg>) {
     // Receive command from commander
     while let Some(command) = (&mut messenger).await {
-        eprintln!("waiting");
         match *command.get() {
             Cmd::Add(a, b) => command.respond(Msg::Output(a + b)),
             Cmd::Exit => {
-                eprintln!("Cccc:closing");
                 command.close(messenger);
                 return;
             }
@@ -80,7 +78,6 @@ pub async fn commander_task() -> Proxy {
 fn main() {
     pasts::block_on(async {
         let mut proxy = commander_task().await;
-        std::thread::sleep(std::time::Duration::from_millis(1000));
 
         proxy.message.take().unwrap().respond(Cmd::Add(43, 400));
         proxy.message = (&mut proxy.commander).await;
