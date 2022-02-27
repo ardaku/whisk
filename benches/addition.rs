@@ -74,7 +74,7 @@ mod channel {
         }
     }
 
-    async fn messenger_task(mut messenger: Messenger<Cmd, Msg>) {
+    pub(super) async fn messenger_task(mut messenger: Messenger<Cmd, Msg>) {
         // Receive command from commander
         while let Some(command) = (&mut messenger).await {
             match *command.get() {
@@ -88,13 +88,7 @@ mod channel {
         unreachable!()
     }
 
-    pub(super) async fn commander_task() -> Proxy {
-        let (mut commander, messenger) = whisk::channel(Msg::Ready).await;
-        let messenger = messenger_task(messenger);
-
-        // Start task on another thread
-        std::thread::spawn(|| pasts::block_on(messenger));
-
+    pub(super) async fn commander_task(mut commander: Commander<Cmd, Msg>) -> Proxy {
         // Wait for Ready message, and respond with Exit command
         while let Some(message) = (&mut commander).await {
             match message.get() {
@@ -102,7 +96,7 @@ mod channel {
                     return Proxy {
                         message: Some(message),
                         commander,
-                    }
+                    };
                 }
                 _ => unreachable!(),
             }
@@ -134,7 +128,12 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 .unwrap(),
         )
     };
-    let mut proxy = futures::executor::block_on(channel::commander_task());
+    let mut proxy = futures::executor::block_on(async {
+        let (commander, messenger) = whisk::channel(channel::Msg::Ready).await;
+        let messenger = channel::messenger_task(messenger);
+        std::thread::spawn(|| pasts::block_on(messenger));
+        channel::commander_task(commander).await
+    });
 
     c.bench_function("function_call", |b| {
         b.iter(|| do_addition(black_box(453), black_box(198_231_014)))
@@ -153,7 +152,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     let args = std::cell::RefCell::new((453, 198_231_014, &mut proxy));
 
     c.bench_with_input(
-        BenchmarkId::new("cmd_addition", "453 and 198_231_014"),
+        BenchmarkId::new("whisk", "threads"),
         &args,
         |z, args| {
             // Insert a call to `to_async` to convert the bencher to async mode.

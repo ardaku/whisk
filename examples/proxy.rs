@@ -82,7 +82,7 @@ fn main() {
         proxy.message.take().unwrap().respond(Cmd::Add(43, 400));
         proxy.message = (&mut proxy.commander).await;
         match proxy.message.as_ref().unwrap().get() {
-            Msg::Output(x) => println!("{x}"),
+            Msg::Output(x) => println!("{}", x),
             _ => unreachable!(),
         }
         proxy.message.take().unwrap().respond(Cmd::Exit);
