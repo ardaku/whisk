@@ -87,6 +87,13 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
+macro_rules! println {
+    ($($arg:tt)*) => ({
+        std::println!($($arg)*);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    })
+}
+
 use std::println;
 
 use alloc::boxed::Box;
@@ -118,6 +125,8 @@ struct Internal<Command, Message> {
     owner: Owner,
     /// True if it is unsound to free this structure
     leased: bool,
+    /// True if ready message has not been sent yet
+    first: bool,
     /// Waker of other task
     waker: Option<Waker>,
     /// Union, because discriminant is `owner` field.
@@ -137,6 +146,7 @@ impl<Cmd, Msg> Future for Commander<Cmd, Msg> {
 
     #[inline(always)]
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        println!("Polling commander");
         unsafe {
             if (*self.0).owner.0.load(Ordering::Acquire) == COMMANDER {
                 if (*self.0).leased {
@@ -160,11 +170,14 @@ impl<Cmd, Msg> Future for Commander<Cmd, Msg> {
                     (*self.0).waker = Some(cx.waker().clone());
                     (*self.0).leased = true;
 
+                    println!("Commander received a message!");
                     Poll::Ready(Some(message))
                 } else {
+                    println!("Commander cannot find messenger!");
                     Poll::Ready(None)
                 }
             } else {
+                println!("Commander still waiting....");
                 Poll::Pending
             }
         }
@@ -212,10 +225,24 @@ impl<Cmd, Msg> Future for Messenger<Cmd, Msg> {
 
     #[inline(always)]
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        println!("Polling messenger");
+
         unsafe {
             if (*self.0).owner.0.load(Ordering::Acquire) == MESSENGER {
                 if (*self.0).leased {
                     std::process::exit(1);// panic!("Didn't respond before next .await");
+                }
+
+                if (*self.0).first {
+                    let waker = (*self.0).waker.take().unwrap();
+
+                    (*self.0).first = false;
+                    (*self.0).owner.0.store(COMMANDER, Ordering::Release);
+                    (*self.0).waker = Some(cx.waker().clone());
+
+                    waker.wake();
+
+                    return Poll::Pending
                 }
 
                 let command = if let Some(ref mut data) = (*self.0).data {
@@ -235,11 +262,14 @@ impl<Cmd, Msg> Future for Messenger<Cmd, Msg> {
                     (*self.0).waker = Some(cx.waker().clone());
                     (*self.0).leased = true;
 
+                    println!("Messenger received a command!");
                     Poll::Ready(Some(command))
                 } else {
+                    println!("Messenger can not find commander!");
                     Poll::Ready(None)
                 }
             } else {
+                println!("Messenger still waiting...");
                 Poll::Pending
             }
         }
@@ -278,20 +308,16 @@ impl<Command, Message> Drop for Messenger<Command, Message> {
 
 struct Channel<Command: Unpin, Message: Unpin>(Option<Message>, PhantomData<Command>);
 
-impl<Cmd, Msg> Future for Channel<Cmd, Msg>
-where
-    Cmd: Unpin,
-    Msg: Unpin,
-{
+impl<Cmd: Unpin, Msg: Unpin> Future for Channel<Cmd, Msg> {
     type Output = (Commander<Cmd, Msg>, Messenger<Cmd, Msg>);
 
     #[inline(always)]
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let waker = cx.waker().clone();
-
         let internal = Internal {
             owner: Owner(AtomicBool::new(MESSENGER)),
             leased: false,
+            first: true,
             waker: Some(waker),
             data: Some(Data {
                 message: ManuallyDrop::new(self.0.take().unwrap()),
@@ -309,12 +335,9 @@ where
 /// Should be called on commander task.  Usually, the first message from the
 /// messenger task will be Ready for commands.
 #[inline(always)]
-pub fn channel<Command, Message>(
-    ready: Message,
-) -> impl Future<Output = (Commander<Command, Message>, Messenger<Command, Message>)>
-where
-    Command: Unpin,
-    Message: Unpin,
+pub fn channel<Cmd: Unpin, Msg: Unpin>(
+    ready: Msg,
+) -> impl Future<Output = (Commander<Cmd, Msg>, Messenger<Cmd, Msg>)>
 {
     Channel(Some(ready), PhantomData)
 }
@@ -342,9 +365,13 @@ impl<Cmd, Msg> Command<Cmd, Msg> {
 
         unsafe {
             // Set response message
+            println!("Mesenger responding");
             if let Some(ref mut data) = (*command.internal).data {
                 data.message = ManuallyDrop::new(message);
+            } else {
+                println!("Mesenger failed to respond");
             }
+            println!("Mesenger responded");
 
             // Release control to commander
             (*command.internal).leased = false;
@@ -405,9 +432,13 @@ impl<Cmd, Msg> Message<Cmd, Msg> {
 
         unsafe {
             // Set response command
+            println!("Commander sending response");
             if let Some(ref mut data) = (*message.internal).data {
                 data.command = ManuallyDrop::new(command);
+            } else {
+                println!("Commander failed to send response");
             }
+            println!("Commander sent response");
 
             // Release control to messenger
             (*message.internal).leased = false;
