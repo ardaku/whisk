@@ -14,13 +14,16 @@ async fn messenger_task(mut messenger: Messenger<Cmd, Msg>) {
     // Some work
     println!("Doing initialization work....");
     // Receive command from commander
-    let command = (&mut messenger).await.unwrap();
-    match command.get() {
-        Cmd::Exit => {
-            println!("Messenger received exit, shutting down....");
-            command.close(messenger)
+    while let Some(command) = (&mut messenger).await {
+        match command.get() {
+            Cmd::Exit => {
+                println!("Messenger received exit, shutting down....");
+                command.close(messenger);
+                return;
+            }
         }
     }
+    unreachable!()
 }
 
 async fn commander_task() {

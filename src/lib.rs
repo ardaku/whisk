@@ -2,8 +2,64 @@
 //!
 //! The idea is based on a concept of calling a function on a different task.
 //!
+//! # Optional Features
+//! The `std` feature is enabled by default, disable it to use on **no_std**.
+//!
 //! # Getting Started
 //!
+//! ```rust
+//! use whisk::Messenger;
+//!
+//! enum Msg {
+//!     /// Messenger has finished initialization
+//!     Ready,
+//! }
+//!
+//! enum Cmd {
+//!     /// Tell messenger to quit
+//!     Exit,
+//! }
+//!
+//! async fn messenger_task(mut messenger: Messenger<Cmd, Msg>) {
+//!     // Some work
+//!     println!("Doing initialization work....");
+//!     // Receive command from commander
+//!     while let Some(command) = (&mut messenger).await {
+//!         match command.get() {
+//!             Cmd::Exit => {
+//!                 println!("Messenger received exit, shutting down....");
+//!                 command.close(messenger);
+//!                 return;
+//!             }
+//!         }
+//!     }
+//!     unreachable!()
+//! }
+//!
+//! async fn commander_task() {
+//!     let (mut commander, messenger) = whisk::channel(Msg::Ready).await;
+//!     let messenger = messenger_task(messenger);
+//!
+//!     // Start task on another thread
+//!     std::thread::spawn(|| pasts::block_on(messenger));
+//!
+//!     // wait for Ready message, and respond with Exit command
+//!     println!("Waiting messages....");
+//!     while let Some(message) = (&mut commander).await {
+//!         match message.get() {
+//!             Msg::Ready => {
+//!                 println!("Received ready, telling messenger to exit....");
+//!                 message.respond(Cmd::Exit)
+//!             }
+//!         }
+//!     }
+//!     println!("Messenger has exited, now too shall the commander");
+//! }
+//!
+//! fn main() {
+//!     pasts::block_on(commander_task())
+//! }
+//! ```
 
 #![no_std]
 #![doc(
@@ -77,13 +133,14 @@ unsafe impl<Command: Send, Message: Send> Send for Commander<Command, Message> {
 impl<Cmd, Msg> Future for Commander<Cmd, Msg> {
     type Output = Option<Message<Cmd, Msg>>;
 
+    #[inline(always)]
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         unsafe {
-            if (*self.0).leased {
-                panic!("Didn't respond before next .await");
-            }
-
             if (*self.0).owner.0.load(Ordering::Acquire) == COMMANDER {
+                if (*self.0).leased {
+                    panic!("Didn't respond before next .await");
+                }
+
                 let message = if let Some(ref mut data) = (*self.0).data {
                     Some(ManuallyDrop::new(ManuallyDrop::take(&mut data.message)))
                 } else {
@@ -99,6 +156,7 @@ impl<Cmd, Msg> Future for Commander<Cmd, Msg> {
                     };
 
                     (*self.0).waker = Some(cx.waker().clone());
+                    (*self.0).leased = true;
 
                     Poll::Ready(Some(message))
                 } else {
@@ -149,13 +207,14 @@ unsafe impl<Command: Send, Message: Send> Send for Messenger<Command, Message> {
 impl<Cmd, Msg> Future for Messenger<Cmd, Msg> {
     type Output = Option<Command<Cmd, Msg>>;
 
+    #[inline(always)]
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         unsafe {
-            if (*self.0).leased {
-                panic!("Didn't respond before next .await");
-            }
-
             if (*self.0).owner.0.load(Ordering::Acquire) == MESSENGER {
+                if (*self.0).leased {
+                    panic!("Didn't respond before next .await");
+                }
+
                 let command = if let Some(ref mut data) = (*self.0).data {
                     Some(ManuallyDrop::new(ManuallyDrop::take(&mut data.command)))
                 } else {
@@ -171,6 +230,7 @@ impl<Cmd, Msg> Future for Messenger<Cmd, Msg> {
                     };
 
                     (*self.0).waker = Some(cx.waker().clone());
+                    (*self.0).leased = true;
 
                     Poll::Ready(Some(command))
                 } else {
@@ -221,6 +281,7 @@ where
 {
     type Output = (Commander<Cmd, Msg>, Messenger<Cmd, Msg>);
 
+    #[inline(always)]
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let waker = cx.waker().clone();
 
@@ -265,11 +326,13 @@ pub struct Command<Cmd, Msg> {
 
 impl<Cmd, Msg> Command<Cmd, Msg> {
     /// Get the received command
+    #[inline(always)]
     pub fn get(&self) -> &Cmd {
         &self.inner
     }
 
     /// Respond to the receieved command
+    #[inline(always)]
     pub fn respond(self, message: Msg) {
         let mut command = self;
 
@@ -280,6 +343,7 @@ impl<Cmd, Msg> Command<Cmd, Msg> {
             }
 
             // Release control to commander
+            (*command.internal).leased = false;
             (*command.internal)
                 .owner
                 .0
@@ -295,22 +359,22 @@ impl<Cmd, Msg> Command<Cmd, Msg> {
     }
 
     /// Respond by closing the channel.
+    #[inline(always)]
     pub fn close(self, messenger: Messenger<Cmd, Msg>) {
         let mut command = self;
 
         unsafe {
-            // Free messenger
-            let _ = messenger;
-            // Manual drop of inner
-            let _ = ManuallyDrop::take(&mut command.inner);
             // Release control to commander
-            let waker = ManuallyDrop::take(&mut command.waker);
-            // Notify commander
+            (*command.internal).leased = false;
+            let _ = messenger;
             (*command.internal)
                 .owner
                 .0
                 .store(COMMANDER, Ordering::Release);
-            waker.wake();
+            ManuallyDrop::take(&mut command.waker).wake();
+
+            // Manual drop of inner
+            let _ = ManuallyDrop::take(&mut command.inner);
         }
 
         // Forget self
@@ -329,11 +393,13 @@ pub struct Message<Cmd, Msg> {
 
 impl<Cmd, Msg> Message<Cmd, Msg> {
     /// Get the received message
+    #[inline(always)]
     pub fn get(&self) -> &Msg {
         &self.inner
     }
 
     /// Respond to the receieved message
+    #[inline(always)]
     pub fn respond(self, command: Cmd) {
         let mut message = self;
 
@@ -344,6 +410,7 @@ impl<Cmd, Msg> Message<Cmd, Msg> {
             }
 
             // Release control to messenger
+            (*message.internal).leased = false;
             (*message.internal)
                 .owner
                 .0
@@ -359,22 +426,22 @@ impl<Cmd, Msg> Message<Cmd, Msg> {
     }
 
     /// Respond by closing the channel.
+    #[inline(always)]
     pub fn close(self, commander: Commander<Cmd, Msg>) {
         let mut message = self;
 
         unsafe {
-            // Free commander
-            let _ = commander;
-            // Manual drop of inner
-            let _ = ManuallyDrop::take(&mut message.inner);
             // Release control to messenger
-            let waker = ManuallyDrop::take(&mut message.waker);
-            // Notify messenger
+            (*message.internal).leased = false;
+            let _ = commander;
             (*message.internal)
                 .owner
                 .0
                 .store(MESSENGER, Ordering::Release);
-            waker.wake();
+            ManuallyDrop::take(&mut message.waker).wake();
+
+            // Manual drop of inner
+            let _ = ManuallyDrop::take(&mut message.inner);
         }
 
         // Forget self
