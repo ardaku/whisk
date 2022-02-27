@@ -156,8 +156,8 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         })
     });
 
-    let args = std::cell::RefCell::new((453, 198_231_014, &mut proxy));
-    let argz = std::cell::RefCell::new((453, 198_231_014, &mut proxy_single, &mut task));
+    let args: *mut _ = &mut (453, 198_231_014, &mut proxy);
+    let argz: *mut _ = &mut (453, 198_231_014, &mut proxy_single, &mut task);
 
     c.bench_with_input(
         BenchmarkId::new("whisk", "call"),
@@ -168,10 +168,10 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             // Insert a call to `to_async` to convert the bencher to async mode.
             // The timing loops are the same as with the normal bencher.
             z.to_async(FuturesExecutor).iter(|| async {
-                let mut args = args.borrow_mut();
-                let (a, b, f, g) = &mut *args;
+                let (a, b, f, g) = unsafe { &mut **args };
 
-                let f = Box::pin(f.do_addition(*a, *b));
+                let f = async { f.do_addition(*a, *b).await };
+                futures::pin_mut!(f);
                 let mut f = f.fuse();
                 let mut g = g.fuse();
 
@@ -192,7 +192,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             // Insert a call to `to_async` to convert the bencher to async mode.
             // The timing loops are the same as with the normal bencher.
             z.to_async(FuturesExecutor).iter(|| async {
-                let mut args = args.borrow_mut();
+                let args = unsafe { &mut **args };
                 let a = args.0;
                 let b = args.1;
 
@@ -201,12 +201,11 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         },
     );
 
-    futures::executor::block_on(args.borrow_mut().2.close());
+    futures::executor::block_on(unsafe { (*args).2.close() });
     futures::executor::block_on(async {
         use futures::FutureExt;
 
-        let mut args = argz.borrow_mut();
-        let (_, _, f, g) = &mut *args;
+        let (_, _, f, g) = unsafe { &mut *argz };
 
         let f = Box::pin(f.close());
         let mut f = f.fuse();
