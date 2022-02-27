@@ -140,7 +140,7 @@ impl<Cmd, Msg> Future for Commander<Cmd, Msg> {
         unsafe {
             if (*self.0).owner.0.load(Ordering::Acquire) == COMMANDER {
                 if (*self.0).leased {
-                    std::process::exit(1); //panic!("Didn't respond before next .await");
+                    panic!("Didn't respond before next .await");
                 }
 
                 let message = if let Some(ref mut data) = (*self.0).data {
@@ -186,7 +186,7 @@ impl<Command, Message> Drop for Commander<Command, Message> {
                 //
                 // Reaching this should always be considered a bug in the
                 // calling code
-                std::process::exit(1); // panic!("Cannot drop `Commander` before `Command`");
+                panic!("Cannot drop `Commander` before `Command`");
             } else if (*self.0).data.is_some() {
                 // Let other messenger know commander is gone
                 (*self.0).data = None;
@@ -213,7 +213,7 @@ impl<Cmd, Msg> Future for Messenger<Cmd, Msg> {
         unsafe {
             if (*self.0).owner.0.load(Ordering::Acquire) == MESSENGER {
                 if (*self.0).leased {
-                    std::process::exit(1); // panic!("Didn't respond before next .await");
+                    panic!("Didn't respond before next .await");
                 }
 
                 if (*self.0).first {
@@ -271,7 +271,7 @@ impl<Command, Message> Drop for Messenger<Command, Message> {
                 //
                 // Reaching this should always be considered a bug in the
                 // calling code
-                std::process::exit(1); //panic!("Cannot drop `Messenger` before `Message`");
+                panic!("Cannot drop `Messenger` before `Message`");
             } else if (*self.0).data.is_some() {
                 // Let other commander know messenger is gone
                 (*self.0).data = None;
