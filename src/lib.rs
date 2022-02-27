@@ -90,7 +90,7 @@ extern crate std;
 macro_rules! println {
     ($($arg:tt)*) => ({
         std::println!($($arg)*);
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        //std::thread::sleep(std::time::Duration::from_millis(200));
     })
 }
 
@@ -205,7 +205,6 @@ impl<Command, Message> Drop for Commander<Command, Message> {
                 (*self.0).data = None;
                 println!("STORE: Freeing commander, messenger only now");
                 (*self.0).owner.0.store(MESSENGER, Ordering::Release);
-                (*self.0).waker.take().unwrap().wake();
             } else {
                 // Messenger is gone, so the commander has to clean up
                 let _ = Box::from_raw(self.0);
@@ -297,7 +296,6 @@ impl<Command, Message> Drop for Messenger<Command, Message> {
                 (*self.0).data = None;
                 println!("STORE: Freeing messenger, commander only now");
                 (*self.0).owner.0.store(COMMANDER, Ordering::Release);
-                (*self.0).waker.take().unwrap().wake();
             } else {
                 // Commander is gone, so the messenger has to clean up
                 let _ = Box::from_raw(self.0);
@@ -398,8 +396,10 @@ impl<Cmd, Msg> Command<Cmd, Msg> {
         unsafe {
             // Release control to commander
             (*command.internal).leased = false;
-            // Drop messenger, notify commander
+            // Drop messenger,
             let _ = messenger;
+            // Notify commander
+            ManuallyDrop::take(&mut command.waker).wake();
             // Manual drop of inner
             let _ = ManuallyDrop::take(&mut command.inner);
         }
@@ -465,8 +465,10 @@ impl<Cmd, Msg> Message<Cmd, Msg> {
         unsafe {
             // Release control to messenger
             (*message.internal).leased = false;
-            // Drop commander, notify messenger
+            // Drop commander
             let _ = commander;
+            // Notify messenger
+            ManuallyDrop::take(&mut message.waker).wake();
             // Manual drop of inner
             let _ = ManuallyDrop::take(&mut message.inner);
         }
