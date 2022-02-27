@@ -136,7 +136,10 @@ impl<Cmd, Msg> Future for Commander<Cmd, Msg> {
     type Output = Option<Message<Cmd, Msg>>;
 
     #[inline(always)]
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Self::Output> {
         unsafe {
             if (*self.0).owner.0.load(Ordering::Acquire) == COMMANDER {
                 if (*self.0).leased {
@@ -144,7 +147,9 @@ impl<Cmd, Msg> Future for Commander<Cmd, Msg> {
                 }
 
                 let message = if let Some(ref mut data) = (*self.0).data {
-                    Some(ManuallyDrop::new(ManuallyDrop::take(&mut data.message)))
+                    Some(ManuallyDrop::new(ManuallyDrop::take(
+                        &mut data.message,
+                    )))
                 } else {
                     None
                 };
@@ -209,7 +214,10 @@ impl<Cmd, Msg> Future for Messenger<Cmd, Msg> {
     type Output = Option<Command<Cmd, Msg>>;
 
     #[inline(always)]
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Self::Output> {
         unsafe {
             if (*self.0).owner.0.load(Ordering::Acquire) == MESSENGER {
                 if (*self.0).leased {
@@ -229,7 +237,9 @@ impl<Cmd, Msg> Future for Messenger<Cmd, Msg> {
                 }
 
                 let command = if let Some(ref mut data) = (*self.0).data {
-                    Some(ManuallyDrop::new(ManuallyDrop::take(&mut data.command)))
+                    Some(ManuallyDrop::new(ManuallyDrop::take(
+                        &mut data.command,
+                    )))
                 } else {
                     None
                 };
@@ -284,13 +294,19 @@ impl<Command, Message> Drop for Messenger<Command, Message> {
     }
 }
 
-struct Channel<Command: Unpin, Message: Unpin>(Option<Message>, PhantomData<Command>);
+struct Channel<Command: Unpin, Message: Unpin>(
+    Option<Message>,
+    PhantomData<Command>,
+);
 
 impl<Cmd: Unpin, Msg: Unpin> Future for Channel<Cmd, Msg> {
     type Output = (Commander<Cmd, Msg>, Messenger<Cmd, Msg>);
 
     #[inline(always)]
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Self::Output> {
         let waker = cx.waker().clone();
         let internal = Internal {
             owner: Owner(AtomicBool::new(MESSENGER)),

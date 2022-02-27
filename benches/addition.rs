@@ -1,9 +1,10 @@
-use criterion::BenchmarkId;
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use dl_api::manual::DlApi;
 use std::ffi::CStr;
 
-use criterion::async_executor::FuturesExecutor;
+use criterion::{
+    async_executor::FuturesExecutor, black_box, criterion_group,
+    criterion_main, BenchmarkId, Criterion,
+};
+use dl_api::manual::DlApi;
 
 mod ffi {
     #[no_mangle]
@@ -114,13 +115,18 @@ mod channel {
 struct Args<'a>(u32, u32, &'a mut channel::Proxy);
 
 impl std::fmt::Display for Args<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> Result<(), std::fmt::Error> {
         write!(f, "Args")
     }
 }
 
 pub fn criterion_benchmark(c: &mut Criterion) {
-    let dl_api = DlApi::new(CStr::from_bytes_with_nul(b"libaddition.so\0").unwrap()).unwrap();
+    let dl_api =
+        DlApi::new(CStr::from_bytes_with_nul(b"libaddition.so\0").unwrap())
+            .unwrap();
     let ffi_addition: unsafe extern "C" fn(u32, u32) -> u32 = unsafe {
         std::mem::transmute(
             dl_api
@@ -134,10 +140,14 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         b.iter(|| do_addition(black_box(453), black_box(198_231_014)))
     });
     c.bench_function("extern_call", |b| {
-        b.iter(|| unsafe { extern_addition(black_box(453), black_box(198_231_014)) })
+        b.iter(|| unsafe {
+            extern_addition(black_box(453), black_box(198_231_014))
+        })
     });
     c.bench_function("ffi_call", |b| {
-        b.iter(|| unsafe { ffi_addition(black_box(453), black_box(198_231_014)) })
+        b.iter(|| unsafe {
+            ffi_addition(black_box(453), black_box(198_231_014))
+        })
     });
 
     let args = std::cell::RefCell::new((453, 198_231_014, &mut proxy));
