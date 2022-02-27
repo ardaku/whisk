@@ -28,6 +28,8 @@
 )]
 
 extern crate alloc;
+#[cfg(feature = "std")]
+extern crate std;
 
 use alloc::boxed::Box;
 use core::{
@@ -38,6 +40,8 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
     task::{Context, Poll, Waker},
 };
+#[cfg(feature = "std")]
+use std::thread;
 
 struct Owner(AtomicBool);
 
@@ -79,14 +83,14 @@ impl<Cmd, Msg> Future for Commander<Cmd, Msg> {
                 panic!("Didn't respond before next .await");
             }
 
-            let message = if let Some(ref mut data) = (*self.0).data {
-                Some(ManuallyDrop::new(ManuallyDrop::take(&mut data.message)))
-            } else {
-                None
-            };
+            if (*self.0).owner.0.load(Ordering::Acquire) == COMMANDER {
+                let message = if let Some(ref mut data) = (*self.0).data {
+                    Some(ManuallyDrop::new(ManuallyDrop::take(&mut data.message)))
+                } else {
+                    None
+                };
 
-            if let Some(message) = message {
-                if (*self.0).owner.0.load(Ordering::Acquire) == COMMANDER {
+                if let Some(message) = message {
                     let waker = (*self.0).waker.take().unwrap();
                     let message = Message {
                         waker: ManuallyDrop::new(waker),
@@ -98,10 +102,10 @@ impl<Cmd, Msg> Future for Commander<Cmd, Msg> {
 
                     Poll::Ready(Some(message))
                 } else {
-                    Poll::Pending
+                    Poll::Ready(None)
                 }
             } else {
-                Poll::Ready(None)
+                Poll::Pending
             }
         }
     }
@@ -112,7 +116,10 @@ impl<Command, Message> Drop for Commander<Command, Message> {
     fn drop(&mut self) {
         unsafe {
             // Wait for message from messenger
-            while (*self.0).owner.0.load(Ordering::Acquire) != COMMANDER {}
+            while (*self.0).owner.0.load(Ordering::Acquire) != COMMANDER {
+                #[cfg(feature = "std")]
+                thread::yield_now()
+            }
 
             if (*self.0).leased {
                 // Panic so that `Command` can't use-after-free.
@@ -148,14 +155,14 @@ impl<Cmd, Msg> Future for Messenger<Cmd, Msg> {
                 panic!("Didn't respond before next .await");
             }
 
-            let command = if let Some(ref mut data) = (*self.0).data {
-                Some(ManuallyDrop::new(ManuallyDrop::take(&mut data.command)))
-            } else {
-                None
-            };
+            if (*self.0).owner.0.load(Ordering::Acquire) == MESSENGER {
+                let command = if let Some(ref mut data) = (*self.0).data {
+                    Some(ManuallyDrop::new(ManuallyDrop::take(&mut data.command)))
+                } else {
+                    None
+                };
 
-            if let Some(command) = command {
-                if (*self.0).owner.0.load(Ordering::Acquire) == MESSENGER {
+                if let Some(command) = command {
                     let waker = (*self.0).waker.take().unwrap();
                     let command = Command {
                         waker: ManuallyDrop::new(waker),
@@ -167,10 +174,10 @@ impl<Cmd, Msg> Future for Messenger<Cmd, Msg> {
 
                     Poll::Ready(Some(command))
                 } else {
-                    Poll::Pending
+                    Poll::Ready(None)
                 }
             } else {
-                Poll::Ready(None)
+                Poll::Pending
             }
         }
     }
@@ -181,7 +188,10 @@ impl<Command, Message> Drop for Messenger<Command, Message> {
     fn drop(&mut self) {
         unsafe {
             // Wait for command from commander
-            while (*self.0).owner.0.load(Ordering::Acquire) != MESSENGER {}
+            while (*self.0).owner.0.load(Ordering::Acquire) != MESSENGER {
+                #[cfg(feature = "std")]
+                thread::yield_now()
+            }
 
             if (*self.0).leased {
                 // Panic so that `Message` can't use-after-free.
@@ -294,11 +304,13 @@ impl<Cmd, Msg> Command<Cmd, Msg> {
             // Manual drop of inner
             let _ = ManuallyDrop::take(&mut command.inner);
             // Release control to commander
+            let waker = ManuallyDrop::take(&mut command.waker);
+            // Notify commander
             (*command.internal)
                 .owner
                 .0
                 .store(COMMANDER, Ordering::Release);
-            ManuallyDrop::take(&mut command.waker).wake();
+            waker.wake();
         }
 
         // Forget self
@@ -356,11 +368,13 @@ impl<Cmd, Msg> Message<Cmd, Msg> {
             // Manual drop of inner
             let _ = ManuallyDrop::take(&mut message.inner);
             // Release control to messenger
+            let waker = ManuallyDrop::take(&mut message.waker);
+            // Notify messenger
             (*message.internal)
                 .owner
                 .0
                 .store(MESSENGER, Ordering::Release);
-            ManuallyDrop::take(&mut message.waker).wake();
+            waker.wake();
         }
 
         // Forget self
