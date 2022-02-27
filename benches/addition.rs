@@ -1,7 +1,7 @@
 use std::ffi::CStr;
 
 use criterion::{
-    async_executor::FuturesExecutor, black_box, criterion_group,
+    async_executor::FuturesExecutor, criterion_group,
     criterion_main, BenchmarkId, Criterion,
 };
 use dl_api::manual::DlApi;
@@ -142,19 +142,41 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         (channel::commander_task(commander).await, messenger)
     });
 
-    c.bench_function("function_call", |b| {
-        b.iter(|| do_addition(black_box(453), black_box(198_231_014)))
-    });
-    c.bench_function("extern_call", |b| {
-        b.iter(|| unsafe {
-            extern_addition(black_box(453), black_box(198_231_014))
-        })
-    });
-    c.bench_function("ffi_call", |b| {
-        b.iter(|| unsafe {
-            ffi_addition(black_box(453), black_box(198_231_014))
-        })
-    });
+    let inputs = (453, 198_231_014);
+
+    c.bench_with_input(
+        BenchmarkId::new("function", "call"),
+        &inputs,
+        |z, args| {
+            // Insert a call to `to_async` to convert the bencher to async mode.
+            // The timing loops are the same as with the normal bencher.
+            z.to_async(FuturesExecutor).iter(|| async {
+                do_addition(args.0, args.1)
+            });
+        },
+    );
+    c.bench_with_input(
+        BenchmarkId::new("extern", "call"),
+        &inputs,
+        |z, args| {
+            // Insert a call to `to_async` to convert the bencher to async mode.
+            // The timing loops are the same as with the normal bencher.
+            z.to_async(FuturesExecutor).iter(|| async {
+                unsafe { extern_addition(args.0, args.1) }
+            });
+        },
+    );
+    c.bench_with_input(
+        BenchmarkId::new("ffi", "call"),
+        &inputs,
+        |z, args| {
+            // Insert a call to `to_async` to convert the bencher to async mode.
+            // The timing loops are the same as with the normal bencher.
+            z.to_async(FuturesExecutor).iter(|| async {
+                unsafe { ffi_addition(args.0, args.1) }
+            });
+        },
+    );
 
     let args: *mut _ = &mut (453, 198_231_014, &mut proxy);
     let argz: *mut _ = &mut (453, 198_231_014, &mut proxy_single, &mut task);
