@@ -135,6 +135,13 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         channel::commander_task(commander).await
     });
 
+    let (mut proxy_single, mut task) = futures::executor::block_on(async {
+        let (commander, messenger) = whisk::channel(channel::Msg::Ready).await;
+        let mut messenger = Box::pin(channel::messenger_task(messenger));
+        let _ = futures::poll!(&mut messenger);
+        (channel::commander_task(commander).await, messenger)
+    });
+
     c.bench_function("function_call", |b| {
         b.iter(|| do_addition(black_box(453), black_box(198_231_014)))
     });
@@ -150,6 +157,33 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     });
 
     let args = std::cell::RefCell::new((453, 198_231_014, &mut proxy));
+    let argz = std::cell::RefCell::new((453, 198_231_014, &mut proxy_single, &mut task));
+
+    c.bench_with_input(
+        BenchmarkId::new("whisk", "call"),
+        &argz,
+        |z, args| {
+            use futures::FutureExt;
+
+            // Insert a call to `to_async` to convert the bencher to async mode.
+            // The timing loops are the same as with the normal bencher.
+            z.to_async(FuturesExecutor).iter(|| async {
+                let mut args = args.borrow_mut();
+                let (a, b, f, g) = &mut *args;
+
+                let f = Box::pin(f.do_addition(*a, *b));
+                let mut f = f.fuse();
+                let mut g = g.fuse();
+
+                let _ = loop {
+                    futures::select! {
+                        a = f => break a,
+                        _ = g => {},
+                    };
+                };
+            });
+        },
+    );
 
     c.bench_with_input(
         BenchmarkId::new("whisk", "threads"),
@@ -168,6 +202,23 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     );
 
     futures::executor::block_on(args.borrow_mut().2.close());
+    futures::executor::block_on(async {
+        use futures::FutureExt;
+
+        let mut args = argz.borrow_mut();
+        let (_, _, f, g) = &mut *args;
+
+        let f = Box::pin(f.close());
+        let mut f = f.fuse();
+        let mut g = g.fuse();
+
+        let _ = loop {
+            futures::select! {
+                a = f => break a,
+                _ = g => {},
+            };
+        };
+    });
 }
 
 criterion_group!(benches, criterion_benchmark);
