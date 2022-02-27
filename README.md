@@ -9,5 +9,7 @@ function/call           time:   [1.5397 ns 1.5445 ns 1.5493 ns]
 extern/call             time:   [1.5522 ns 1.5566 ns 1.5612 ns]
 ffi/call                time:   [2.3279 ns 2.3406 ns 2.3521 ns]
 whisk/call              time:   [128.41 ns 128.79 ns 129.15 ns]
+flume/call              time:   [461.08 ns 462.58 ns 464.00 ns]
 whisk/threads           time:   [7.2141 us 7.2827 us 7.3575 us]
+flume/threads           time:   [7.4545 us 7.6034 us 7.7496 us]
 ```

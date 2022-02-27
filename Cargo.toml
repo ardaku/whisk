@@ -10,6 +10,7 @@ pasts = "0.8"
 dl_api = "0.4"
 criterion = { version = "0.3", features = ["async_futures"] }
 futures = "0.3"
+flume = "0.10"
 
 [features]
 default = ["std"]
