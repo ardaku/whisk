@@ -1,8 +1,8 @@
 use std::ffi::CStr;
 
 use criterion::{
-    async_executor::FuturesExecutor, criterion_group,
-    criterion_main, BenchmarkId, Criterion,
+    async_executor::FuturesExecutor, criterion_group, criterion_main,
+    BenchmarkId, Criterion,
 };
 use dl_api::manual::DlApi;
 
@@ -88,7 +88,9 @@ mod channel {
         unreachable!()
     }
 
-    pub(super) async fn commander_task(mut commander: Commander<Cmd, Msg>) -> Proxy {
+    pub(super) async fn commander_task(
+        mut commander: Commander<Cmd, Msg>,
+    ) -> Proxy {
         // Wait for Ready message, and respond with Exit command
         while let Some(message) = (&mut commander).await {
             match message.get() {
@@ -150,9 +152,8 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         |z, args| {
             // Insert a call to `to_async` to convert the bencher to async mode.
             // The timing loops are the same as with the normal bencher.
-            z.to_async(FuturesExecutor).iter(|| async {
-                do_addition(args.0, args.1)
-            });
+            z.to_async(FuturesExecutor)
+                .iter(|| async { do_addition(args.0, args.1) });
         },
     );
     c.bench_with_input(
@@ -161,51 +162,41 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         |z, args| {
             // Insert a call to `to_async` to convert the bencher to async mode.
             // The timing loops are the same as with the normal bencher.
-            z.to_async(FuturesExecutor).iter(|| async {
-                unsafe { extern_addition(args.0, args.1) }
-            });
+            z.to_async(FuturesExecutor)
+                .iter(|| async { unsafe { extern_addition(args.0, args.1) } });
         },
     );
-    c.bench_with_input(
-        BenchmarkId::new("ffi", "call"),
-        &inputs,
-        |z, args| {
-            // Insert a call to `to_async` to convert the bencher to async mode.
-            // The timing loops are the same as with the normal bencher.
-            z.to_async(FuturesExecutor).iter(|| async {
-                unsafe { ffi_addition(args.0, args.1) }
-            });
-        },
-    );
+    c.bench_with_input(BenchmarkId::new("ffi", "call"), &inputs, |z, args| {
+        // Insert a call to `to_async` to convert the bencher to async mode.
+        // The timing loops are the same as with the normal bencher.
+        z.to_async(FuturesExecutor)
+            .iter(|| async { unsafe { ffi_addition(args.0, args.1) } });
+    });
 
     let args: *mut _ = &mut (453, 198_231_014, &mut proxy);
     let argz: *mut _ = &mut (453, 198_231_014, &mut proxy_single, &mut task);
 
-    c.bench_with_input(
-        BenchmarkId::new("whisk", "call"),
-        &argz,
-        |z, args| {
-            use futures::FutureExt;
+    c.bench_with_input(BenchmarkId::new("whisk", "call"), &argz, |z, args| {
+        use futures::FutureExt;
 
-            // Insert a call to `to_async` to convert the bencher to async mode.
-            // The timing loops are the same as with the normal bencher.
-            z.to_async(FuturesExecutor).iter(|| async {
-                let (a, b, f, g) = unsafe { &mut **args };
+        // Insert a call to `to_async` to convert the bencher to async mode.
+        // The timing loops are the same as with the normal bencher.
+        z.to_async(FuturesExecutor).iter(|| async {
+            let (a, b, f, g) = unsafe { &mut **args };
 
-                let f = async { f.do_addition(*a, *b).await };
-                futures::pin_mut!(f);
-                let mut f = f.fuse();
-                let mut g = g.fuse();
+            let f = async { f.do_addition(*a, *b).await };
+            futures::pin_mut!(f);
+            let mut f = f.fuse();
+            let mut g = g.fuse();
 
-                let _ = loop {
-                    futures::select! {
-                        a = f => break a,
-                        _ = g => {},
-                    };
+            let _ = loop {
+                futures::select! {
+                    a = f => break a,
+                    _ = g => {},
                 };
-            });
-        },
-    );
+            };
+        });
+    });
 
     c.bench_with_input(
         BenchmarkId::new("whisk", "threads"),
