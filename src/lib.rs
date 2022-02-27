@@ -87,15 +87,6 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
-macro_rules! println {
-    ($($arg:tt)*) => ({
-        std::println!($($arg)*);
-        //std::thread::sleep(std::time::Duration::from_millis(200));
-    })
-}
-
-use std::println;
-
 use alloc::boxed::Box;
 use core::{
     future::Future,
@@ -146,7 +137,6 @@ impl<Cmd, Msg> Future for Commander<Cmd, Msg> {
 
     #[inline(always)]
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        println!("Polling commander");
         unsafe {
             if (*self.0).owner.0.load(Ordering::Acquire) == COMMANDER {
                 if (*self.0).leased {
@@ -170,14 +160,11 @@ impl<Cmd, Msg> Future for Commander<Cmd, Msg> {
                     (*self.0).waker = Some(cx.waker().clone());
                     (*self.0).leased = true;
 
-                    println!("Commander received a message!");
                     Poll::Ready(Some(message))
                 } else {
-                    println!("Commander cannot find messenger!");
                     Poll::Ready(None)
                 }
             } else {
-                println!("Commander still waiting....");
                 Poll::Pending
             }
         }
@@ -199,11 +186,10 @@ impl<Command, Message> Drop for Commander<Command, Message> {
                 //
                 // Reaching this should always be considered a bug in the
                 // calling code
-                std::process::exit(1);// panic!("Cannot drop `Commander` before `Command`");
+                std::process::exit(1); // panic!("Cannot drop `Commander` before `Command`");
             } else if (*self.0).data.is_some() {
                 // Let other messenger know commander is gone
                 (*self.0).data = None;
-                println!("STORE: Freeing commander, messenger only now");
                 (*self.0).owner.0.store(MESSENGER, Ordering::Release);
             } else {
                 // Messenger is gone, so the commander has to clean up
@@ -224,12 +210,10 @@ impl<Cmd, Msg> Future for Messenger<Cmd, Msg> {
 
     #[inline(always)]
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        println!("Polling messenger");
-
         unsafe {
             if (*self.0).owner.0.load(Ordering::Acquire) == MESSENGER {
                 if (*self.0).leased {
-                    std::process::exit(1);// panic!("Didn't respond before next .await");
+                    std::process::exit(1); // panic!("Didn't respond before next .await");
                 }
 
                 if (*self.0).first {
@@ -241,7 +225,7 @@ impl<Cmd, Msg> Future for Messenger<Cmd, Msg> {
 
                     waker.wake();
 
-                    return Poll::Pending
+                    return Poll::Pending;
                 }
 
                 let command = if let Some(ref mut data) = (*self.0).data {
@@ -261,14 +245,11 @@ impl<Cmd, Msg> Future for Messenger<Cmd, Msg> {
                     (*self.0).waker = Some(cx.waker().clone());
                     (*self.0).leased = true;
 
-                    println!("Messenger received a command!");
                     Poll::Ready(Some(command))
                 } else {
-                    println!("Messenger can not find commander!");
                     Poll::Ready(None)
                 }
             } else {
-                println!("Messenger still waiting...");
                 Poll::Pending
             }
         }
@@ -290,11 +271,10 @@ impl<Command, Message> Drop for Messenger<Command, Message> {
                 //
                 // Reaching this should always be considered a bug in the
                 // calling code
-                std::process::exit(1);//panic!("Cannot drop `Messenger` before `Message`");
+                std::process::exit(1); //panic!("Cannot drop `Messenger` before `Message`");
             } else if (*self.0).data.is_some() {
                 // Let other commander know messenger is gone
                 (*self.0).data = None;
-                println!("STORE: Freeing messenger, commander only now");
                 (*self.0).owner.0.store(COMMANDER, Ordering::Release);
             } else {
                 // Commander is gone, so the messenger has to clean up
@@ -335,8 +315,7 @@ impl<Cmd: Unpin, Msg: Unpin> Future for Channel<Cmd, Msg> {
 #[inline(always)]
 pub fn channel<Cmd: Unpin, Msg: Unpin>(
     ready: Msg,
-) -> impl Future<Output = (Commander<Cmd, Msg>, Messenger<Cmd, Msg>)>
-{
+) -> impl Future<Output = (Commander<Cmd, Msg>, Messenger<Cmd, Msg>)> {
     Channel(Some(ready), PhantomData)
 }
 
@@ -363,17 +342,12 @@ impl<Cmd, Msg> Command<Cmd, Msg> {
 
         unsafe {
             // Set response message
-            println!("Mesenger responding");
             if let Some(ref mut data) = (*command.internal).data {
                 data.message = ManuallyDrop::new(message);
-            } else {
-                println!("Mesenger failed to respond");
             }
-            println!("Mesenger responded");
 
             // Release control to commander
             (*command.internal).leased = false;
-            println!("STORE: Messenger responding to commander");
             (*command.internal)
                 .owner
                 .0
@@ -432,17 +406,12 @@ impl<Cmd, Msg> Message<Cmd, Msg> {
 
         unsafe {
             // Set response command
-            println!("Commander sending response");
             if let Some(ref mut data) = (*message.internal).data {
                 data.command = ManuallyDrop::new(command);
-            } else {
-                println!("Commander failed to send response");
             }
-            println!("Commander sent response");
 
             // Release control to messenger
             (*message.internal).leased = false;
-            println!("STORE: Commander responding to messenger");
             (*message.internal)
                 .owner
                 .0

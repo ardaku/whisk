@@ -1,5 +1,5 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use criterion::BenchmarkId;
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use dl_api::manual::DlApi;
 use std::ffi::CStr;
 
@@ -8,7 +8,7 @@ use criterion::async_executor::FuturesExecutor;
 mod ffi {
     #[no_mangle]
     #[inline(never)]
-    extern "C" fn extern_addition(a: u32, b: u32) -> u32 { 
+    extern "C" fn extern_addition(a: u32, b: u32) -> u32 {
         a + b
     }
 }
@@ -51,15 +51,23 @@ mod channel {
             message.respond(Cmd::Add(a, b));
             let message = (&mut self.commander).await;
             match message {
-                Some(msg) => {
-                    match *msg.get() {
-                        Msg::Output(v) => {
-                            self.message = Some(msg);
-                            v
-                        }
-                        _ => unreachable!(),
+                Some(msg) => match *msg.get() {
+                    Msg::Output(v) => {
+                        self.message = Some(msg);
+                        v
                     }
+                    _ => unreachable!(),
                 },
+                _ => unreachable!(),
+            }
+        }
+
+        pub(super) async fn close(&mut self) {
+            let message = self.message.take().unwrap();
+            message.respond(Cmd::Exit);
+            let message = (&mut self.commander).await;
+            match message {
+                None => {}
                 _ => unreachable!(),
             }
         }
@@ -68,11 +76,9 @@ mod channel {
     async fn messenger_task(mut messenger: Messenger<Cmd, Msg>) {
         // Receive command from commander
         while let Some(command) = (&mut messenger).await {
-            eprintln!("waiting");
             match *command.get() {
                 Cmd::Add(a, b) => command.respond(Msg::Output(a + b)),
                 Cmd::Exit => {
-                    eprintln!("closing");
                     command.close(messenger);
                     return;
                 }
@@ -91,7 +97,12 @@ mod channel {
         // Wait for Ready message, and respond with Exit command
         while let Some(message) = (&mut commander).await {
             match message.get() {
-                Msg::Ready => return Proxy { message: Some(message), commander },
+                Msg::Ready => {
+                    return Proxy {
+                        message: Some(message),
+                        commander,
+                    }
+                }
                 _ => unreachable!(),
             }
         }
@@ -110,26 +121,44 @@ impl std::fmt::Display for Args<'_> {
 
 pub fn criterion_benchmark(c: &mut Criterion) {
     let dl_api = DlApi::new(CStr::from_bytes_with_nul(b"libaddition.so\0").unwrap()).unwrap();
-    let ffi_addition: unsafe extern "C" fn(u32, u32) -> u32 = unsafe { std::mem::transmute(dl_api.get(CStr::from_bytes_with_nul(b"ffi_addition\0").unwrap()).unwrap()) };
+    let ffi_addition: unsafe extern "C" fn(u32, u32) -> u32 = unsafe {
+        std::mem::transmute(
+            dl_api
+                .get(CStr::from_bytes_with_nul(b"ffi_addition\0").unwrap())
+                .unwrap(),
+        )
+    };
     let mut proxy = futures::executor::block_on(channel::commander_task());
 
-    c.bench_function("function_call", |b| b.iter(|| do_addition(black_box(453), black_box(198_231_014))));
-    c.bench_function("extern_call", |b| b.iter(|| unsafe { extern_addition(black_box(453), black_box(198_231_014)) }));
-    c.bench_function("ffi_call", |b| b.iter(|| unsafe { ffi_addition(black_box(453), black_box(198_231_014)) }));
+    c.bench_function("function_call", |b| {
+        b.iter(|| do_addition(black_box(453), black_box(198_231_014)))
+    });
+    c.bench_function("extern_call", |b| {
+        b.iter(|| unsafe { extern_addition(black_box(453), black_box(198_231_014)) })
+    });
+    c.bench_function("ffi_call", |b| {
+        b.iter(|| unsafe { ffi_addition(black_box(453), black_box(198_231_014)) })
+    });
 
     let args = std::cell::RefCell::new((453, 198_231_014, &mut proxy));
 
-    c.bench_with_input(BenchmarkId::new("cmd_addition", "453 and 198_231_014"), &args, |z, args| {
-        // Insert a call to `to_async` to convert the bencher to async mode.
-        // The timing loops are the same as with the normal bencher.
-        z.to_async(FuturesExecutor).iter(|| async {
-            let mut args = args.borrow_mut();
-            let a = args.0;
-            let b = args.1;
+    c.bench_with_input(
+        BenchmarkId::new("cmd_addition", "453 and 198_231_014"),
+        &args,
+        |z, args| {
+            // Insert a call to `to_async` to convert the bencher to async mode.
+            // The timing loops are the same as with the normal bencher.
+            z.to_async(FuturesExecutor).iter(|| async {
+                let mut args = args.borrow_mut();
+                let a = args.0;
+                let b = args.1;
 
-            args.2.do_addition(a, b).await
-        });
-    });
+                args.2.do_addition(a, b).await
+            });
+        },
+    );
+
+    futures::executor::block_on(args.borrow_mut().2.close());
 }
 
 criterion_group!(benches, criterion_benchmark);

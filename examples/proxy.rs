@@ -26,14 +26,12 @@ impl Proxy {
         message.respond(Cmd::Add(a, b));
         let message = (&mut self.commander).await;
         match message {
-            Some(msg) => {
-                match *msg.get() {
-                    Msg::Output(v) => {
-                        self.message = Some(msg);
-                        v
-                    }
-                    _ => unreachable!(),
+            Some(msg) => match *msg.get() {
+                Msg::Output(v) => {
+                    self.message = Some(msg);
+                    v
                 }
+                _ => unreachable!(),
             },
             _ => unreachable!(),
         }
@@ -66,7 +64,12 @@ pub async fn commander_task() -> Proxy {
     // Wait for Ready message, and respond with Exit command
     while let Some(message) = (&mut commander).await {
         match message.get() {
-            Msg::Ready => return Proxy { message: Some(message), commander },
+            Msg::Ready => {
+                return Proxy {
+                    message: Some(message),
+                    commander,
+                }
+            }
             _ => unreachable!(),
         }
     }
@@ -85,6 +88,7 @@ fn main() {
             Msg::Output(x) => println!("{x}"),
             _ => unreachable!(),
         }
-        proxy.message.unwrap().close(proxy.commander);
+        proxy.message.take().unwrap().respond(Cmd::Exit);
+        proxy.message = (&mut proxy.commander).await;
     })
 }
