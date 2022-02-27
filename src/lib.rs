@@ -87,6 +87,8 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
+use std::println;
+
 use alloc::boxed::Box;
 use core::{
     future::Future,
@@ -138,7 +140,7 @@ impl<Cmd, Msg> Future for Commander<Cmd, Msg> {
         unsafe {
             if (*self.0).owner.0.load(Ordering::Acquire) == COMMANDER {
                 if (*self.0).leased {
-                    panic!("Didn't respond before next .await");
+                    std::process::exit(1); //panic!("Didn't respond before next .await");
                 }
 
                 let message = if let Some(ref mut data) = (*self.0).data {
@@ -184,10 +186,11 @@ impl<Command, Message> Drop for Commander<Command, Message> {
                 //
                 // Reaching this should always be considered a bug in the
                 // calling code
-                panic!("Cannot drop `Commander` before `Command`");
+                std::process::exit(1);// panic!("Cannot drop `Commander` before `Command`");
             } else if (*self.0).data.is_some() {
                 // Let other messenger know commander is gone
                 (*self.0).data = None;
+                println!("STORE: Freeing commander, messenger only now");
                 (*self.0).owner.0.store(MESSENGER, Ordering::Release);
                 (*self.0).waker.take().unwrap().wake();
             } else {
@@ -212,7 +215,7 @@ impl<Cmd, Msg> Future for Messenger<Cmd, Msg> {
         unsafe {
             if (*self.0).owner.0.load(Ordering::Acquire) == MESSENGER {
                 if (*self.0).leased {
-                    panic!("Didn't respond before next .await");
+                    std::process::exit(1);// panic!("Didn't respond before next .await");
                 }
 
                 let command = if let Some(ref mut data) = (*self.0).data {
@@ -258,10 +261,11 @@ impl<Command, Message> Drop for Messenger<Command, Message> {
                 //
                 // Reaching this should always be considered a bug in the
                 // calling code
-                panic!("Cannot drop `Messenger` before `Message`");
+                std::process::exit(1);//panic!("Cannot drop `Messenger` before `Message`");
             } else if (*self.0).data.is_some() {
                 // Let other commander know messenger is gone
                 (*self.0).data = None;
+                println!("STORE: Freeing messenger, commander only now");
                 (*self.0).owner.0.store(COMMANDER, Ordering::Release);
                 (*self.0).waker.take().unwrap().wake();
             } else {
@@ -344,6 +348,7 @@ impl<Cmd, Msg> Command<Cmd, Msg> {
 
             // Release control to commander
             (*command.internal).leased = false;
+            println!("STORE: Messenger responding to commander");
             (*command.internal)
                 .owner
                 .0
@@ -366,13 +371,8 @@ impl<Cmd, Msg> Command<Cmd, Msg> {
         unsafe {
             // Release control to commander
             (*command.internal).leased = false;
+            // Drop messenger, notify commander
             let _ = messenger;
-            (*command.internal)
-                .owner
-                .0
-                .store(COMMANDER, Ordering::Release);
-            ManuallyDrop::take(&mut command.waker).wake();
-
             // Manual drop of inner
             let _ = ManuallyDrop::take(&mut command.inner);
         }
@@ -411,6 +411,7 @@ impl<Cmd, Msg> Message<Cmd, Msg> {
 
             // Release control to messenger
             (*message.internal).leased = false;
+            println!("STORE: Commander responding to messenger");
             (*message.internal)
                 .owner
                 .0
@@ -433,13 +434,8 @@ impl<Cmd, Msg> Message<Cmd, Msg> {
         unsafe {
             // Release control to messenger
             (*message.internal).leased = false;
+            // Drop commander, notify messenger
             let _ = commander;
-            (*message.internal)
-                .owner
-                .0
-                .store(MESSENGER, Ordering::Release);
-            ManuallyDrop::take(&mut message.waker).wake();
-
             // Manual drop of inner
             let _ = ManuallyDrop::take(&mut message.inner);
         }
