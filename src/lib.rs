@@ -56,6 +56,7 @@
 //!     println!("Messenger has exited, now too shall the commander");
 //! }
 //!
+//! # #[ntest::timeout(1000)]
 //! fn main() {
 //!     pasts::block_on(commander_task())
 //! }
