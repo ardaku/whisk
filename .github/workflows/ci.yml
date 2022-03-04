@@ -9,6 +9,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         tc: [1.56.1, stable, beta, nightly]
+        ar: [--all --no-default-features -- --nocapture, --all --all-features -- --nocapture]
     steps:
     - uses: actions/checkout@v2
     - uses: actions-rs/toolchain@v1
@@ -19,7 +20,7 @@ jobs:
     - uses: actions-rs/cargo@v1
       with:
         command: test
-        args: --all --all-features
+        args: ${{ matrix.ar }}
   cross-compile:
     runs-on: ${{ matrix.os }}
     strategy:

@@ -182,7 +182,7 @@ impl<Command, Message> Drop for Commander<Command, Message> {
     fn drop(&mut self) {
         unsafe {
             // Wait for message from messenger
-            while (*self.0).owner.0.load(Ordering::Acquire) != COMMANDER {
+            while (*self.0).owner.0.load(Ordering::SeqCst) != COMMANDER {
                 #[cfg(feature = "std")]
                 thread::yield_now()
             }
@@ -272,7 +272,7 @@ impl<Command, Message> Drop for Messenger<Command, Message> {
     fn drop(&mut self) {
         unsafe {
             // Wait for command from commander
-            while (*self.0).owner.0.load(Ordering::Acquire) != MESSENGER {
+            while (*self.0).owner.0.load(Ordering::SeqCst) != MESSENGER {
                 #[cfg(feature = "std")]
                 thread::yield_now()
             }
