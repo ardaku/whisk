@@ -1,6 +1,6 @@
 # Whisk
 [![tests](https://github.com/AldaronLau/whisk/actions/workflows/ci.yml/badge.svg)](https://github.com/AldaronLau/whisk/actions/workflows/ci.yml)
-[![GitHub commit activity](https://img.shields.io/github/commit-activity/m/AldaronLau/whisk)](https://github.com/AldaronLau/whisk/)
+[![GitHub commit activity](https://img.shields.io/github/commit-activity/y/AldaronLau/whisk)](https://github.com/AldaronLau/whisk/)
 [![GitHub contributors](https://img.shields.io/github/contributors/AldaronLau/whisk)](https://github.com/AldaronLau/whisk/graphs/contributors)  
 [![Crates.io](https://img.shields.io/crates/v/whisk)](https://crates.io/crates/whisk)
 [![Crates.io](https://img.shields.io/crates/d/whisk)](https://crates.io/crates/whisk)
