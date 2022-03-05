@@ -23,6 +23,7 @@
 //! async fn messenger_task(mut messenger: Messenger<Cmd, Msg>) {
 //!     // Some work
 //!     println!("Doing initialization work....");
+//!
 //!     // Receive command from commander
 //!     while let Some(command) = (&mut messenger).await {
 //!         match command.get() {
@@ -33,6 +34,7 @@
 //!             }
 //!         }
 //!     }
+//!
 //!     unreachable!()
 //! }
 //!
@@ -41,9 +43,9 @@
 //!     let messenger = messenger_task(messenger);
 //!
 //!     // Start task on another thread
-//!     std::thread::spawn(|| pasts::block_on(messenger));
+//!     let messenger = std::thread::spawn(|| pasts::block_on(messenger));
 //!
-//!     // wait for Ready message, and respond with Exit command
+//!     // Wait for Ready message, and respond with Exit command
 //!     println!("Waiting messages....");
 //!     while let Some(message) = (&mut commander).await {
 //!         match message.get() {
@@ -53,10 +55,13 @@
 //!             }
 //!         }
 //!     }
+//!
+//!     // Wait for messenger to close down
+//!     messenger.join().unwrap();
 //!     println!("Messenger has exited, now too shall the commander");
 //! }
 //!
-//! # #[ntest::timeout(1000)]
+//! // Call into executor of your choice
 //! fn main() {
 //!     pasts::block_on(commander_task())
 //! }
@@ -182,7 +187,7 @@ impl<Command, Message> Drop for Commander<Command, Message> {
     fn drop(&mut self) {
         unsafe {
             // Wait for message from messenger
-            while (*self.0).owner.0.load(Ordering::SeqCst) != COMMANDER {
+            while (*self.0).owner.0.load(Ordering::Acquire) != COMMANDER {
                 #[cfg(feature = "std")]
                 thread::yield_now()
             }
@@ -194,7 +199,7 @@ impl<Command, Message> Drop for Commander<Command, Message> {
                 // calling code
                 panic!("Cannot drop `Commander` before `Command`");
             } else if (*self.0).data.is_some() {
-                // Let other messenger know commander is gone
+                // Let messenger know commander is gone
                 (*self.0).data = None;
                 (*self.0).owner.0.store(MESSENGER, Ordering::Release);
             } else {
@@ -272,7 +277,7 @@ impl<Command, Message> Drop for Messenger<Command, Message> {
     fn drop(&mut self) {
         unsafe {
             // Wait for command from commander
-            while (*self.0).owner.0.load(Ordering::SeqCst) != MESSENGER {
+            while (*self.0).owner.0.load(Ordering::Acquire) != MESSENGER {
                 #[cfg(feature = "std")]
                 thread::yield_now()
             }
@@ -284,7 +289,7 @@ impl<Command, Message> Drop for Messenger<Command, Message> {
                 // calling code
                 panic!("Cannot drop `Messenger` before `Message`");
             } else if (*self.0).data.is_some() {
-                // Let other commander know messenger is gone
+                // Let commander know messenger is gone
                 (*self.0).data = None;
                 (*self.0).owner.0.store(COMMANDER, Ordering::Release);
             } else {
@@ -372,7 +377,7 @@ impl<Cmd, Msg> Command<Cmd, Msg> {
             ManuallyDrop::take(&mut command.waker).wake();
 
             // Manual drop of inner
-            let _ = ManuallyDrop::take(&mut command.inner);
+            drop(ManuallyDrop::take(&mut command.inner));
         }
 
         // Forget self
@@ -388,11 +393,11 @@ impl<Cmd, Msg> Command<Cmd, Msg> {
             // Release control to commander
             (*command.internal).leased = false;
             // Drop messenger,
-            let _ = messenger;
+            drop(messenger);
             // Notify commander
             ManuallyDrop::take(&mut command.waker).wake();
             // Manual drop of inner
-            let _ = ManuallyDrop::take(&mut command.inner);
+            drop(ManuallyDrop::take(&mut command.inner));
         }
 
         // Forget self
@@ -436,7 +441,7 @@ impl<Cmd, Msg> Message<Cmd, Msg> {
             ManuallyDrop::take(&mut message.waker).wake();
 
             // Manual drop of inner
-            let _ = ManuallyDrop::take(&mut message.inner);
+            drop(ManuallyDrop::take(&mut message.inner));
         }
 
         // Forget self
@@ -452,11 +457,11 @@ impl<Cmd, Msg> Message<Cmd, Msg> {
             // Release control to messenger
             (*message.internal).leased = false;
             // Drop commander
-            let _ = commander;
+            drop(commander);
             // Notify messenger
             ManuallyDrop::take(&mut message.waker).wake();
             // Manual drop of inner
-            let _ = ManuallyDrop::take(&mut message.inner);
+            drop(ManuallyDrop::take(&mut message.inner));
         }
 
         // Forget self

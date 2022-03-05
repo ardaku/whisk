@@ -13,6 +13,7 @@ enum Cmd {
 async fn messenger_task(mut messenger: Messenger<Cmd, Msg>) {
     // Some work
     println!("Doing initialization work....");
+
     // Receive command from commander
     while let Some(command) = (&mut messenger).await {
         match command.get() {
@@ -23,6 +24,7 @@ async fn messenger_task(mut messenger: Messenger<Cmd, Msg>) {
             }
         }
     }
+
     unreachable!()
 }
 
@@ -31,9 +33,9 @@ async fn commander_task() {
     let messenger = messenger_task(messenger);
 
     // Start task on another thread
-    std::thread::spawn(|| pasts::block_on(messenger));
+    let messenger = std::thread::spawn(|| pasts::block_on(messenger));
 
-    // wait for Ready message, and respond with Exit command
+    // Wait for Ready message, and respond with Exit command
     println!("Waiting messages....");
     while let Some(message) = (&mut commander).await {
         match message.get() {
@@ -43,9 +45,13 @@ async fn commander_task() {
             }
         }
     }
+
+    // Wait for messenger to close down
+    messenger.join().unwrap();
     println!("Messenger has exited, now too shall the commander");
 }
 
+// Call into executor of your choice
 fn main() {
     pasts::block_on(commander_task())
 }

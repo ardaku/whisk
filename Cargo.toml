@@ -10,7 +10,7 @@
 
 [package]
 name = "whisk"
-version = "0.1.0"
+version = "0.1.1"
 license = "Apache-2.0 OR MIT OR BSL-1.0"
 description = "A simple and fast two-way async channel"
 repository = "https://github.com/AldaronLau/whisk"
