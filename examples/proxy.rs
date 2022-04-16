@@ -24,7 +24,7 @@ impl Proxy {
     pub async fn do_addition(&mut self, a: u32, b: u32) -> u32 {
         let message = self.message.take().unwrap();
         message.respond(Cmd::Add(a, b));
-        let message = (&mut self.commander).await;
+        let message = self.commander.next().unwrap().await;
         match message {
             Some(msg) => match *msg.get() {
                 Msg::Output(v) => {
@@ -40,7 +40,7 @@ impl Proxy {
 
 async fn messenger_task(mut messenger: Messenger<Cmd, Msg>) {
     // Receive command from commander
-    while let Some(command) = (&mut messenger).await {
+    while let Some(command) = messenger.next().unwrap().await {
         match *command.get() {
             Cmd::Add(a, b) => command.respond(Msg::Output(a + b)),
             Cmd::Exit => {
@@ -60,7 +60,7 @@ pub async fn commander_task() -> Proxy {
     std::thread::spawn(|| pasts::block_on(messenger));
 
     // Wait for Ready message, and respond with Exit command
-    while let Some(message) = (&mut commander).await {
+    while let Some(message) = commander.next().unwrap().await {
         match message.get() {
             Msg::Ready => {
                 return Proxy {
@@ -80,12 +80,12 @@ fn main() {
         let mut proxy = commander_task().await;
 
         proxy.message.take().unwrap().respond(Cmd::Add(43, 400));
-        proxy.message = (&mut proxy.commander).await;
+        proxy.message = proxy.commander.next().unwrap().await;
         match proxy.message.as_ref().unwrap().get() {
             Msg::Output(x) => println!("{}", x),
             _ => unreachable!(),
         }
         proxy.message.take().unwrap().respond(Cmd::Exit);
-        proxy.message = (&mut proxy.commander).await;
+        proxy.message = proxy.commander.next().unwrap().await;
     })
 }

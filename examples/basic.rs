@@ -15,7 +15,7 @@ async fn messenger_task(mut messenger: Messenger<Cmd, Msg>) {
     println!("Doing initialization work....");
 
     // Receive command from commander
-    while let Some(command) = (&mut messenger).await {
+    while let Some(command) = messenger.next().unwrap().await {
         match command.get() {
             Cmd::Exit => {
                 println!("Messenger received exit, shutting down....");
@@ -37,7 +37,7 @@ async fn commander_task() {
 
     // Wait for Ready message, and respond with Exit command
     println!("Waiting messages....");
-    while let Some(message) = (&mut commander).await {
+    while let Some(message) = commander.next().unwrap().await {
         match message.get() {
             Msg::Ready => {
                 println!("Received ready, telling messenger to exit....");

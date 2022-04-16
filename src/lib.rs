@@ -25,7 +25,7 @@
 //!     println!("Doing initialization work....");
 //!
 //!     // Receive command from commander
-//!     while let Some(command) = (&mut messenger).await {
+//!     while let Some(command) = messenger.next().unwrap().await {
 //!         match command.get() {
 //!             Cmd::Exit => {
 //!                 println!("Messenger received exit, shutting down....");
@@ -47,7 +47,7 @@
 //!
 //!     // Wait for Ready message, and respond with Exit command
 //!     println!("Waiting messages....");
-//!     while let Some(message) = (&mut commander).await {
+//!     while let Some(message) = commander.next().unwrap().await {
 //!         match message.get() {
 //!             Msg::Ready => {
 //!                 println!("Received ready, telling messenger to exit....");
@@ -105,6 +105,125 @@ use core::{
 #[cfg(feature = "std")]
 use std::thread;
 
+// Sealed futures
+mod seal {
+    use super::*;
+
+    #[derive(Debug)]
+    pub struct CommanderFuture<Cmd, Msg>(pub(super) *mut Internal<Cmd, Msg>);
+
+    unsafe impl<Cmd: Send, Msg: Send> Send for CommanderFuture<Cmd, Msg> {}
+
+    #[derive(Debug)]
+    pub struct MessengerFuture<Cmd, Msg>(pub(super) *mut Internal<Cmd, Msg>);
+
+    unsafe impl<Cmd: Send, Msg: Send> Send for MessengerFuture<Cmd, Msg> {}
+
+    impl<Cmd, Msg> Future for CommanderFuture<Cmd, Msg> {
+        type Output = Option<Message<Cmd, Msg>>;
+
+        #[inline(always)]
+        fn poll(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<Self::Output> {
+            let this = &mut self.get_mut();
+
+            unsafe {
+                if (*this.0).owner.0.load(Ordering::Acquire) == COMMANDER {
+                    if (*this.0).leased {
+                        panic!("Didn't respond before next .await");
+                    }
+
+                    let message = if let Some(ref mut data) = (*this.0).data {
+                        Some(ManuallyDrop::new(ManuallyDrop::take(
+                            &mut data.message,
+                        )))
+                    } else {
+                        None
+                    };
+
+                    if let Some(message) = message {
+                        let waker = (*this.0).waker.take().unwrap();
+                        let message = Message {
+                            waker: ManuallyDrop::new(waker),
+                            inner: message,
+                            internal: this.0,
+                        };
+
+                        (*this.0).waker = Some(cx.waker().clone());
+                        (*this.0).leased = true;
+
+                        Poll::Ready(Some(message))
+                    } else {
+                        Poll::Ready(None)
+                    }
+                } else {
+                    Poll::Pending
+                }
+            }
+        }
+    }
+
+    impl<Cmd, Msg> Future for MessengerFuture<Cmd, Msg> {
+        type Output = Option<Command<Cmd, Msg>>;
+
+        #[inline(always)]
+        fn poll(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<Self::Output> {
+            let this = &mut self.get_mut();
+
+            unsafe {
+                if (*this.0).owner.0.load(Ordering::Acquire) == MESSENGER {
+                    if (*this.0).leased {
+                        panic!("Didn't respond before next .await");
+                    }
+
+                    if (*this.0).first {
+                        let waker = (*this.0).waker.take().unwrap();
+
+                        (*this.0).first = false;
+                        (*this.0).owner.0.store(COMMANDER, Ordering::Release);
+                        (*this.0).waker = Some(cx.waker().clone());
+
+                        waker.wake();
+
+                        return Poll::Pending;
+                    }
+
+                    let command = if let Some(ref mut data) = (*this.0).data {
+                        Some(ManuallyDrop::new(ManuallyDrop::take(
+                            &mut data.command,
+                        )))
+                    } else {
+                        None
+                    };
+
+                    if let Some(command) = command {
+                        let waker = (*this.0).waker.take().unwrap();
+                        let command = Command {
+                            waker: ManuallyDrop::new(waker),
+                            inner: command,
+                            internal: this.0,
+                        };
+
+                        (*this.0).waker = Some(cx.waker().clone());
+                        (*this.0).leased = true;
+
+                        Poll::Ready(Some(command))
+                    } else {
+                        Poll::Ready(None)
+                    }
+                } else {
+                    Poll::Pending
+                }
+            }
+        }
+    }
+}
+
 struct Owner(AtomicBool);
 
 const COMMANDER: bool = false;
@@ -138,47 +257,23 @@ pub struct Commander<Command, Message>(*mut Internal<Command, Message>);
 
 unsafe impl<Command: Send, Message: Send> Send for Commander<Command, Message> {}
 
-impl<Cmd, Msg> Future for Commander<Cmd, Msg> {
-    type Output = Option<Message<Cmd, Msg>>;
+impl<Command, Message> Iterator for Commander<Command, Message> {
+    type Item = seal::CommanderFuture<Command, Message>;
 
-    #[inline(always)]
-    fn poll(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Self::Output> {
-        unsafe {
-            if (*self.0).owner.0.load(Ordering::Acquire) == COMMANDER {
-                if (*self.0).leased {
-                    panic!("Didn't respond before next .await");
-                }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (usize::MAX, None)
+    }
 
-                let message = if let Some(ref mut data) = (*self.0).data {
-                    Some(ManuallyDrop::new(ManuallyDrop::take(
-                        &mut data.message,
-                    )))
-                } else {
-                    None
-                };
+    fn count(self) -> usize {
+        unimplemented!()
+    }
 
-                if let Some(message) = message {
-                    let waker = (*self.0).waker.take().unwrap();
-                    let message = Message {
-                        waker: ManuallyDrop::new(waker),
-                        inner: message,
-                        internal: self.0,
-                    };
+    fn last(self) -> Option<Self::Item> {
+        Some(seal::CommanderFuture(self.0))
+    }
 
-                    (*self.0).waker = Some(cx.waker().clone());
-                    (*self.0).leased = true;
-
-                    Poll::Ready(Some(message))
-                } else {
-                    Poll::Ready(None)
-                }
-            } else {
-                Poll::Pending
-            }
-        }
+    fn next(&mut self) -> Option<Self::Item> {
+        Some(seal::CommanderFuture(self.0))
     }
 }
 
@@ -216,59 +311,23 @@ pub struct Messenger<Command, Message>(*mut Internal<Command, Message>);
 
 unsafe impl<Command: Send, Message: Send> Send for Messenger<Command, Message> {}
 
-impl<Cmd, Msg> Future for Messenger<Cmd, Msg> {
-    type Output = Option<Command<Cmd, Msg>>;
+impl<Command, Message> Iterator for Messenger<Command, Message> {
+    type Item = seal::MessengerFuture<Command, Message>;
 
-    #[inline(always)]
-    fn poll(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Self::Output> {
-        unsafe {
-            if (*self.0).owner.0.load(Ordering::Acquire) == MESSENGER {
-                if (*self.0).leased {
-                    panic!("Didn't respond before next .await");
-                }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (usize::MAX, None)
+    }
 
-                if (*self.0).first {
-                    let waker = (*self.0).waker.take().unwrap();
+    fn count(self) -> usize {
+        unimplemented!()
+    }
 
-                    (*self.0).first = false;
-                    (*self.0).owner.0.store(COMMANDER, Ordering::Release);
-                    (*self.0).waker = Some(cx.waker().clone());
+    fn last(self) -> Option<Self::Item> {
+        Some(seal::MessengerFuture(self.0))
+    }
 
-                    waker.wake();
-
-                    return Poll::Pending;
-                }
-
-                let command = if let Some(ref mut data) = (*self.0).data {
-                    Some(ManuallyDrop::new(ManuallyDrop::take(
-                        &mut data.command,
-                    )))
-                } else {
-                    None
-                };
-
-                if let Some(command) = command {
-                    let waker = (*self.0).waker.take().unwrap();
-                    let command = Command {
-                        waker: ManuallyDrop::new(waker),
-                        inner: command,
-                        internal: self.0,
-                    };
-
-                    (*self.0).waker = Some(cx.waker().clone());
-                    (*self.0).leased = true;
-
-                    Poll::Ready(Some(command))
-                } else {
-                    Poll::Ready(None)
-                }
-            } else {
-                Poll::Pending
-            }
-        }
+    fn next(&mut self) -> Option<Self::Item> {
+        Some(seal::MessengerFuture(self.0))
     }
 }
 
