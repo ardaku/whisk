@@ -149,8 +149,6 @@ mod seal {
         ) -> Poll<Self::Output> {
             let this = &mut self.get_mut();
 
-            Internal::set_commander_waker(this.0, cx.waker().clone());
-
             unsafe {
                 if (*this.0).owner.0.load(Ordering::Acquire) == COMMANDER {
                     let message = if let Some(ref mut data) = (*this.0).data {
@@ -161,16 +159,14 @@ mod seal {
                         None
                     };
 
-                    if let Some(message) = message {
-                        (*this.0).message = Some(Message {
-                            inner: message,
-                            internal: this.0,
-                            _phantom: PhantomData,
-                        });
-                    }
-
+                    (*this.0).message = message.map(|mut message| Message {
+                        inner: ManuallyDrop::take(&mut message),
+                        internal: this.0,
+                        _phantom: PhantomData,
+                    });
                     Poll::Ready(())
                 } else {
+                    Internal::set_commander_waker(this.0, cx.waker().clone());
                     Poll::Pending
                 }
             }
@@ -187,14 +183,16 @@ mod seal {
         ) -> Poll<Self::Output> {
             let this = &mut self.get_mut();
 
-            Internal::set_messenger_waker(this.0, cx.waker().clone());
-
             unsafe {
                 if (*this.0).owner.0.load(Ordering::Acquire) == MESSENGER {
                     if (*this.0).first {
                         (*this.0).first = false;
                         (*this.0).owner.0.store(COMMANDER, Ordering::Release);
 
+                        Internal::set_messenger_waker(
+                            this.0,
+                            cx.waker().clone(),
+                        );
                         Internal::commander_wake(this.0);
 
                         return Poll::Pending;
@@ -208,16 +206,14 @@ mod seal {
                         None
                     };
 
-                    if let Some(command) = command {
-                        (*this.0).command = Some(Command {
-                            inner: command,
-                            internal: this.0,
-                            _phantom: PhantomData,
-                        });
-                    }
-
+                    (*this.0).command = command.map(|mut command| Command {
+                        inner: ManuallyDrop::take(&mut command),
+                        internal: this.0,
+                        _phantom: PhantomData,
+                    });
                     Poll::Ready(())
                 } else {
+                    Internal::set_messenger_waker(this.0, cx.waker().clone());
                     Poll::Pending
                 }
             }
@@ -475,21 +471,12 @@ pub fn channel<Cmd: Unpin + Send, Msg: Unpin + Send>(
 #[must_use]
 #[derive(Debug)]
 pub struct Command<'a, Cmd: Send, Msg: Send> {
-    inner: ManuallyDrop<Cmd>,
+    inner: Cmd,
     internal: *mut Internal<Cmd, Msg>,
     _phantom: PhantomData<&'a mut ()>,
 }
 
 unsafe impl<Cmd: Send, Msg: Send> Send for Command<'_, Cmd, Msg> {}
-
-impl<Cmd: Send, Msg: Send> Drop for Command<'_, Cmd, Msg> {
-    #[inline(always)]
-    fn drop(&mut self) {
-        unsafe {
-            drop(ManuallyDrop::take(&mut self.inner));
-        }
-    }
-}
 
 impl<Cmd: Send, Msg: Send> Command<'_, Cmd, Msg> {
     /// Get the received command
@@ -501,27 +488,18 @@ impl<Cmd: Send, Msg: Send> Command<'_, Cmd, Msg> {
     /// Respond to the receieved command
     #[inline(always)]
     pub fn respond(self, message: Msg) -> impl Future<Output = ()> + Send {
-        let mut command = self;
+        let internal = self.internal;
 
         unsafe {
             // Set response message
-            if let Some(ref mut data) = (*command.internal).data {
+            if let Some(ref mut data) = (*internal).data {
                 data.message = ManuallyDrop::new(message);
             }
 
             // Release control to commander
-            (*command.internal)
-                .owner
-                .0
-                .store(COMMANDER, Ordering::Release);
-            Internal::commander_wake(command.internal);
-
-            // Manual drop of inner
-            drop(ManuallyDrop::take(&mut command.inner));
+            (*internal).owner.0.store(COMMANDER, Ordering::Release);
+            Internal::commander_wake(internal);
         }
-
-        let internal = command.internal;
-        core::mem::forget(command);
 
         // Create messenger future
         seal::MessengerFuture(internal)
@@ -532,21 +510,12 @@ impl<Cmd: Send, Msg: Send> Command<'_, Cmd, Msg> {
 #[must_use]
 #[derive(Debug)]
 pub struct Message<'a, Cmd: Send, Msg: Send> {
-    inner: ManuallyDrop<Msg>,
+    inner: Msg,
     internal: *mut Internal<Cmd, Msg>,
     _phantom: PhantomData<&'a mut ()>,
 }
 
 unsafe impl<Cmd: Send, Msg: Send> Send for Message<'_, Cmd, Msg> {}
-
-impl<Cmd: Send, Msg: Send> Drop for Message<'_, Cmd, Msg> {
-    #[inline(always)]
-    fn drop(&mut self) {
-        unsafe {
-            drop(ManuallyDrop::take(&mut self.inner));
-        }
-    }
-}
 
 impl<Cmd: Send, Msg: Send> Message<'_, Cmd, Msg> {
     /// Get the received message
@@ -558,27 +527,18 @@ impl<Cmd: Send, Msg: Send> Message<'_, Cmd, Msg> {
     /// Respond to the receieved message
     #[inline(always)]
     pub fn respond(self, command: Cmd) -> impl Future<Output = ()> + Send {
-        let mut message = self;
+        let internal = self.internal;
 
         unsafe {
             // Set response command
-            if let Some(ref mut data) = (*message.internal).data {
+            if let Some(ref mut data) = (*internal).data {
                 data.command = ManuallyDrop::new(command);
             }
 
             // Release control to messenger
-            (*message.internal)
-                .owner
-                .0
-                .store(MESSENGER, Ordering::Release);
-            Internal::messenger_wake(message.internal);
-
-            // Manual drop of inner
-            drop(ManuallyDrop::take(&mut message.inner));
+            (*internal).owner.0.store(MESSENGER, Ordering::Release);
+            Internal::messenger_wake(internal);
         }
-
-        let internal = message.internal;
-        core::mem::forget(message);
 
         // Create commander future
         seal::CommanderFuture(internal)
