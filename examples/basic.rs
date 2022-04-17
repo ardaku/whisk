@@ -28,8 +28,7 @@ async fn messenger_task(mut messenger: Messenger<Cmd, Msg>) {
             }
             Cmd::Exit => {
                 println!("Messenger received exit, shutting down…");
-                command.close(messenger);
-                return
+                return;
             }
         };
         responder.await
@@ -48,7 +47,7 @@ async fn commander_task() {
     // Wait for Ready message, and respond with Exit command
     println!("Commander waiting ready message…");
     commander.start().await;
-    for message in commander {
+    for message in &mut commander {
         let responder = match message.get() {
             Msg::Ready => {
                 println!("Commander received ready, sending add command…");
@@ -56,7 +55,7 @@ async fn commander_task() {
             }
             Msg::Response(value) => {
                 assert_eq!(*value, 443);
-                println!("Commander received response, sending exit command…");
+                println!("Commander received response, commanding exit…");
                 message.respond(Cmd::Exit)
             }
         };
