@@ -3,26 +3,35 @@ use whisk::Messenger;
 enum Msg {
     /// Messenger has finished initialization
     Ready,
+    /// Result of addition
+    Response(u32),
 }
 
 enum Cmd {
+    /// Tell messenger to add
+    Add(u32, u32),
     /// Tell messenger to quit
     Exit,
 }
 
 async fn messenger_task(mut messenger: Messenger<Cmd, Msg>) {
-    // Some work
-    println!("Doing initialization work....");
+    // Send ready and receive command from commander
+    println!("Messenger sending ready");
+    messenger.start().await;
 
-    // Receive command from commander
-    while let Some(command) = (&mut messenger).await {
-        match command.get() {
+    for command in &mut messenger {
+        let responder = match command.get() {
+            Cmd::Add(a, b) => {
+                println!("Messenger received add, sending response");
+                let result = *a + *b;
+                command.respond(Msg::Response(result))
+            }
             Cmd::Exit => {
-                println!("Messenger received exit, shutting down....");
-                command.close(messenger);
+                println!("Messenger received exit, shutting down…");
                 return;
             }
-        }
+        };
+        responder.await
     }
 
     unreachable!()
@@ -30,25 +39,32 @@ async fn messenger_task(mut messenger: Messenger<Cmd, Msg>) {
 
 async fn commander_task() {
     let (mut commander, messenger) = whisk::channel(Msg::Ready).await;
-    let messenger = messenger_task(messenger);
 
-    // Start task on another thread
+    // Start messenger task on another thread
+    let messenger = messenger_task(messenger);
     let messenger = std::thread::spawn(|| pasts::block_on(messenger));
 
     // Wait for Ready message, and respond with Exit command
-    println!("Waiting messages....");
-    while let Some(message) = (&mut commander).await {
-        match message.get() {
+    println!("Commander waiting ready message…");
+    commander.start().await;
+    for message in &mut commander {
+        let responder = match message.get() {
             Msg::Ready => {
-                println!("Received ready, telling messenger to exit....");
+                println!("Commander received ready, sending add command…");
+                message.respond(Cmd::Add(43, 400))
+            }
+            Msg::Response(value) => {
+                assert_eq!(*value, 443);
+                println!("Commander received response, commanding exit…");
                 message.respond(Cmd::Exit)
             }
-        }
+        };
+        responder.await
     }
 
-    // Wait for messenger to close down
+    println!("Commander disconnected");
     messenger.join().unwrap();
-    println!("Messenger has exited, now too shall the commander");
+    println!("Messenger thread joined");
 }
 
 // Call into executor of your choice

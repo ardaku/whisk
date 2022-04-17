@@ -13,26 +13,35 @@
 //! enum Msg {
 //!     /// Messenger has finished initialization
 //!     Ready,
+//!     /// Result of addition
+//!     Response(u32),
 //! }
 //!
 //! enum Cmd {
+//!     /// Tell messenger to add
+//!     Add(u32, u32),
 //!     /// Tell messenger to quit
 //!     Exit,
 //! }
 //!
 //! async fn messenger_task(mut messenger: Messenger<Cmd, Msg>) {
-//!     // Some work
-//!     println!("Doing initialization work....");
+//!     // Send ready and receive command from commander
+//!     println!("Messenger sending ready");
+//!     messenger.start().await;
 //!
-//!     // Receive command from commander
-//!     while let Some(command) = (&mut messenger).await {
-//!         match command.get() {
+//!     for command in &mut messenger {
+//!         let responder = match command.get() {
+//!             Cmd::Add(a, b) => {
+//!                 println!("Messenger received add, sending response");
+//!                 let result = *a + *b;
+//!                 command.respond(Msg::Response(result))
+//!             }
 //!             Cmd::Exit => {
-//!                 println!("Messenger received exit, shutting down....");
-//!                 command.close(messenger);
+//!                 println!("Messenger received exit, shutting down…");
 //!                 return;
 //!             }
-//!         }
+//!         };
+//!         responder.await
 //!     }
 //!
 //!     unreachable!()
@@ -40,25 +49,32 @@
 //!
 //! async fn commander_task() {
 //!     let (mut commander, messenger) = whisk::channel(Msg::Ready).await;
-//!     let messenger = messenger_task(messenger);
 //!
-//!     // Start task on another thread
+//!     // Start messenger task on another thread
+//!     let messenger = messenger_task(messenger);
 //!     let messenger = std::thread::spawn(|| pasts::block_on(messenger));
 //!
 //!     // Wait for Ready message, and respond with Exit command
-//!     println!("Waiting messages....");
-//!     while let Some(message) = (&mut commander).await {
-//!         match message.get() {
+//!     println!("Commander waiting ready message…");
+//!     commander.start().await;
+//!     for message in &mut commander {
+//!         let responder = match message.get() {
 //!             Msg::Ready => {
-//!                 println!("Received ready, telling messenger to exit....");
+//!                 println!("Commander received ready, sending add command…");
+//!                 message.respond(Cmd::Add(43, 400))
+//!             }
+//!             Msg::Response(value) => {
+//!                 assert_eq!(*value, 443);
+//!                 println!("Commander received response, commanding exit…");
 //!                 message.respond(Cmd::Exit)
 //!             }
-//!         }
+//!         };
+//!         responder.await
 //!     }
 //!
-//!     // Wait for messenger to close down
+//!     println!("Commander disconnected");
 //!     messenger.join().unwrap();
-//!     println!("Messenger has exited, now too shall the commander");
+//!     println!("Messenger thread joined");
 //! }
 //!
 //! // Call into executor of your choice
@@ -97,7 +113,7 @@ use alloc::boxed::Box;
 use core::{
     future::Future,
     marker::PhantomData,
-    mem::{self, ManuallyDrop},
+    mem::ManuallyDrop,
     pin::Pin,
     sync::atomic::{AtomicBool, Ordering},
     task::{Context, Poll, Waker},
@@ -105,84 +121,247 @@ use core::{
 #[cfg(feature = "std")]
 use std::thread;
 
-struct Owner(AtomicBool);
+// Sealed futures
+mod seal {
+    use super::*;
 
-const COMMANDER: bool = false;
-const MESSENGER: bool = true;
+    #[derive(Debug)]
+    pub(super) struct CommanderFuture<Cmd: Send, Msg: Send>(
+        pub(super) *mut Internal<Cmd, Msg>,
+    );
 
-union Data<Command, Message> {
-    /// Command for child
-    command: ManuallyDrop<Command>,
-    /// Message for parent
-    message: ManuallyDrop<Message>,
-}
+    unsafe impl<Cmd: Send, Msg: Send> Send for CommanderFuture<Cmd, Msg> {}
 
-struct Internal<Command, Message> {
-    /// Who owns the data
-    owner: Owner,
-    /// True if it is unsound to free this structure
-    leased: bool,
-    /// True if ready message has not been sent yet
-    first: bool,
-    /// Waker of other task
-    waker: Option<Waker>,
-    /// Union, because discriminant is `owner` field.
-    ///
-    /// None on disconnect
-    data: Option<Data<Command, Message>>,
-}
+    #[derive(Debug)]
+    pub(super) struct MessengerFuture<Cmd: Send, Msg: Send>(
+        pub(super) *mut Internal<Cmd, Msg>,
+    );
 
-/// A commander tells the messenger what to do.
-#[derive(Debug)]
-pub struct Commander<Command, Message>(*mut Internal<Command, Message>);
+    unsafe impl<Cmd: Send, Msg: Send> Send for MessengerFuture<Cmd, Msg> {}
 
-unsafe impl<Command: Send, Message: Send> Send for Commander<Command, Message> {}
+    impl<Cmd: Send, Msg: Send> Future for CommanderFuture<Cmd, Msg> {
+        type Output = ();
 
-impl<Cmd, Msg> Future for Commander<Cmd, Msg> {
-    type Output = Option<Message<Cmd, Msg>>;
+        #[inline(always)]
+        fn poll(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<Self::Output> {
+            let this = &mut self.get_mut();
 
-    #[inline(always)]
-    fn poll(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Self::Output> {
-        unsafe {
-            if (*self.0).owner.0.load(Ordering::Acquire) == COMMANDER {
-                if (*self.0).leased {
-                    panic!("Didn't respond before next .await");
-                }
+            Internal::set_commander_waker(this.0, cx.waker().clone());
 
-                let message = if let Some(ref mut data) = (*self.0).data {
-                    Some(ManuallyDrop::new(ManuallyDrop::take(
-                        &mut data.message,
-                    )))
-                } else {
-                    None
-                };
-
-                if let Some(message) = message {
-                    let waker = (*self.0).waker.take().unwrap();
-                    let message = Message {
-                        waker: ManuallyDrop::new(waker),
-                        inner: message,
-                        internal: self.0,
+            unsafe {
+                if (*this.0).owner.0.load(Ordering::Acquire) == COMMANDER {
+                    let message = if let Some(ref mut data) = (*this.0).data {
+                        Some(ManuallyDrop::new(ManuallyDrop::take(
+                            &mut data.message,
+                        )))
+                    } else {
+                        None
                     };
 
-                    (*self.0).waker = Some(cx.waker().clone());
-                    (*self.0).leased = true;
+                    if let Some(message) = message {
+                        (*this.0).message = Some(Message {
+                            inner: message,
+                            internal: this.0,
+                            _phantom: PhantomData,
+                        });
+                    }
 
-                    Poll::Ready(Some(message))
+                    Poll::Ready(())
                 } else {
-                    Poll::Ready(None)
+                    Poll::Pending
                 }
-            } else {
-                Poll::Pending
+            }
+        }
+    }
+
+    impl<Cmd: Send, Msg: Send> Future for MessengerFuture<Cmd, Msg> {
+        type Output = ();
+
+        #[inline(always)]
+        fn poll(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<Self::Output> {
+            let this = &mut self.get_mut();
+
+            Internal::set_messenger_waker(this.0, cx.waker().clone());
+
+            unsafe {
+                if (*this.0).owner.0.load(Ordering::Acquire) == MESSENGER {
+                    if (*this.0).first {
+                        (*this.0).first = false;
+                        (*this.0).owner.0.store(COMMANDER, Ordering::Release);
+
+                        Internal::commander_wake(this.0);
+
+                        return Poll::Pending;
+                    }
+
+                    let command = if let Some(ref mut data) = (*this.0).data {
+                        Some(ManuallyDrop::new(ManuallyDrop::take(
+                            &mut data.command,
+                        )))
+                    } else {
+                        None
+                    };
+
+                    if let Some(command) = command {
+                        (*this.0).command = Some(Command {
+                            inner: command,
+                            internal: this.0,
+                            _phantom: PhantomData,
+                        });
+                    }
+
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
             }
         }
     }
 }
 
-impl<Command, Message> Drop for Commander<Command, Message> {
+struct Owner(AtomicBool);
+
+const COMMANDER: bool = false;
+const MESSENGER: bool = true;
+
+union Data<Cmd, Msg> {
+    /// Command for child
+    command: ManuallyDrop<Cmd>,
+    /// Message for parent
+    message: ManuallyDrop<Msg>,
+}
+
+struct Internal<Cmd: Send, Msg: Send> {
+    /// True if ready message has not been sent yet
+    first: bool,
+    /// Union, because discriminant is `owner` field.
+    ///
+    /// None on disconnect
+    data: Option<Data<Cmd, Msg>>,
+    /// Who owns the data
+    owner: Owner,
+
+    /// Owned by messenger, next command.
+    command: Option<Command<'static, Cmd, Msg>>,
+    /// Shared by messenger, commander waker.
+    commander_waker: Option<Waker>,
+    commander_waker_locked: AtomicBool,
+
+    /// Owned by commander, next message.
+    message: Option<Message<'static, Cmd, Msg>>,
+    /// Shared by commander, messenger waker.
+    messenger_waker: Option<Waker>,
+    messenger_waker_locked: AtomicBool,
+}
+
+impl<Cmd: Send, Msg: Send> Internal<Cmd, Msg> {
+    #[inline(always)]
+    unsafe fn acquire_lock(lock: &AtomicBool) {
+        // Spinlock wait
+        while lock
+            .compare_exchange_weak(
+                false,
+                true,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            )
+            .is_err()
+        {
+            #[cfg(feature = "std")]
+            thread::yield_now()
+        }
+    }
+
+    #[inline(always)]
+    fn commander_wake(internal: *mut Self) {
+        unsafe {
+            // Acquire lock
+            Self::acquire_lock(&(*internal).commander_waker_locked);
+            // Take & wake
+            if let Some(waker) = (*internal).commander_waker.take() {
+                waker.wake();
+            }
+            // Release lock
+            (*internal)
+                .commander_waker_locked
+                .store(false, Ordering::Release);
+        }
+    }
+
+    #[inline(always)]
+    fn messenger_wake(internal: *mut Self) {
+        unsafe {
+            // Acquire lock
+            Self::acquire_lock(&(*internal).messenger_waker_locked);
+            // Take & wake
+            if let Some(waker) = (*internal).messenger_waker.take() {
+                waker.wake();
+            }
+            // Release lock
+            (*internal)
+                .messenger_waker_locked
+                .store(false, Ordering::Release);
+        }
+    }
+
+    #[inline(always)]
+    fn set_commander_waker(internal: *mut Self, waker: Waker) {
+        unsafe {
+            // Acquire lock
+            Self::acquire_lock(&(*internal).commander_waker_locked);
+            // Insert new waker
+            (*internal).commander_waker = Some(waker);
+            // Release lock
+            (*internal)
+                .commander_waker_locked
+                .store(false, Ordering::Release);
+        }
+    }
+
+    #[inline(always)]
+    fn set_messenger_waker(internal: *mut Self, waker: Waker) {
+        unsafe {
+            // Acquire lock
+            Self::acquire_lock(&(*internal).messenger_waker_locked);
+            // Insert new waker
+            (*internal).messenger_waker = Some(waker);
+            // Release lock
+            (*internal)
+                .messenger_waker_locked
+                .store(false, Ordering::Release);
+        }
+    }
+}
+
+/// A commander tells the messenger what to do.
+#[derive(Debug)]
+pub struct Commander<Cmd: Send, Msg: Send>(*mut Internal<Cmd, Msg>);
+
+unsafe impl<Cmd: Send, Msg: Send> Send for Commander<Cmd, Msg> {}
+
+impl<Cmd: Send, Msg: Send> Commander<Cmd, Msg> {
+    /// Fetch the first message.  This should only be called once.
+    pub fn start(&mut self) -> impl Future<Output = ()> + Send {
+        seal::CommanderFuture(self.0)
+    }
+}
+
+impl<'a, Cmd: Send, Msg: Send> Iterator for &'a mut Commander<Cmd, Msg> {
+    type Item = Message<'a, Cmd, Msg>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // Safe because the other end doesn't use this field
+        unsafe { (*self.0).message.take() }
+    }
+}
+
+impl<Cmd: Send, Msg: Send> Drop for Commander<Cmd, Msg> {
     #[inline(always)]
     fn drop(&mut self) {
         unsafe {
@@ -192,16 +371,11 @@ impl<Command, Message> Drop for Commander<Command, Message> {
                 thread::yield_now()
             }
 
-            if (*self.0).leased {
-                // Panic so that `Command` can't use-after-free.
-                //
-                // Reaching this should always be considered a bug in the
-                // calling code
-                panic!("Cannot drop `Commander` before `Command`");
-            } else if (*self.0).data.is_some() {
+            if (*self.0).data.is_some() {
                 // Let messenger know commander is gone
                 (*self.0).data = None;
                 (*self.0).owner.0.store(MESSENGER, Ordering::Release);
+                Internal::messenger_wake(self.0);
             } else {
                 // Messenger is gone, so the commander has to clean up
                 let _ = Box::from_raw(self.0);
@@ -212,67 +386,27 @@ impl<Command, Message> Drop for Commander<Command, Message> {
 
 /// A messenger reports the results of tasks the commander assigned.
 #[derive(Debug)]
-pub struct Messenger<Command, Message>(*mut Internal<Command, Message>);
+pub struct Messenger<Cmd: Send, Msg: Send>(*mut Internal<Cmd, Msg>);
 
-unsafe impl<Command: Send, Message: Send> Send for Messenger<Command, Message> {}
+unsafe impl<Cmd: Send, Msg: Send> Send for Messenger<Cmd, Msg> {}
 
-impl<Cmd, Msg> Future for Messenger<Cmd, Msg> {
-    type Output = Option<Command<Cmd, Msg>>;
-
-    #[inline(always)]
-    fn poll(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Self::Output> {
-        unsafe {
-            if (*self.0).owner.0.load(Ordering::Acquire) == MESSENGER {
-                if (*self.0).leased {
-                    panic!("Didn't respond before next .await");
-                }
-
-                if (*self.0).first {
-                    let waker = (*self.0).waker.take().unwrap();
-
-                    (*self.0).first = false;
-                    (*self.0).owner.0.store(COMMANDER, Ordering::Release);
-                    (*self.0).waker = Some(cx.waker().clone());
-
-                    waker.wake();
-
-                    return Poll::Pending;
-                }
-
-                let command = if let Some(ref mut data) = (*self.0).data {
-                    Some(ManuallyDrop::new(ManuallyDrop::take(
-                        &mut data.command,
-                    )))
-                } else {
-                    None
-                };
-
-                if let Some(command) = command {
-                    let waker = (*self.0).waker.take().unwrap();
-                    let command = Command {
-                        waker: ManuallyDrop::new(waker),
-                        inner: command,
-                        internal: self.0,
-                    };
-
-                    (*self.0).waker = Some(cx.waker().clone());
-                    (*self.0).leased = true;
-
-                    Poll::Ready(Some(command))
-                } else {
-                    Poll::Ready(None)
-                }
-            } else {
-                Poll::Pending
-            }
-        }
+impl<Cmd: Send, Msg: Send> Messenger<Cmd, Msg> {
+    /// Fetch the first command.  This should only be called once.
+    pub fn start(&mut self) -> impl Future<Output = ()> + Send {
+        seal::MessengerFuture(self.0)
     }
 }
 
-impl<Command, Message> Drop for Messenger<Command, Message> {
+impl<'a, Cmd: Send, Msg: Send> Iterator for &'a mut Messenger<Cmd, Msg> {
+    type Item = Command<'a, Cmd, Msg>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // Safe because the other end doesn't use this field
+        unsafe { (*self.0).command.take() }
+    }
+}
+
+impl<Cmd: Send, Msg: Send> Drop for Messenger<Cmd, Msg> {
     #[inline(always)]
     fn drop(&mut self) {
         unsafe {
@@ -282,16 +416,11 @@ impl<Command, Message> Drop for Messenger<Command, Message> {
                 thread::yield_now()
             }
 
-            if (*self.0).leased {
-                // Panic so that `Message` can't use-after-free.
-                //
-                // Reaching this should always be considered a bug in the
-                // calling code
-                panic!("Cannot drop `Messenger` before `Message`");
-            } else if (*self.0).data.is_some() {
+            if (*self.0).data.is_some() {
                 // Let commander know messenger is gone
                 (*self.0).data = None;
                 (*self.0).owner.0.store(COMMANDER, Ordering::Release);
+                Internal::commander_wake(self.0);
             } else {
                 // Commander is gone, so the messenger has to clean up
                 let _ = Box::from_raw(self.0);
@@ -300,12 +429,9 @@ impl<Command, Message> Drop for Messenger<Command, Message> {
     }
 }
 
-struct Channel<Command: Unpin, Message: Unpin>(
-    Option<Message>,
-    PhantomData<Command>,
-);
+struct Channel<Cmd: Unpin, Msg: Unpin>(Option<Msg>, PhantomData<Cmd>);
 
-impl<Cmd: Unpin, Msg: Unpin> Future for Channel<Cmd, Msg> {
+impl<Cmd: Unpin + Send, Msg: Unpin + Send> Future for Channel<Cmd, Msg> {
     type Output = (Commander<Cmd, Msg>, Messenger<Cmd, Msg>);
 
     #[inline(always)]
@@ -315,13 +441,17 @@ impl<Cmd: Unpin, Msg: Unpin> Future for Channel<Cmd, Msg> {
     ) -> Poll<Self::Output> {
         let waker = cx.waker().clone();
         let internal = Internal {
-            owner: Owner(AtomicBool::new(MESSENGER)),
-            leased: false,
             first: true,
-            waker: Some(waker),
+            owner: Owner(AtomicBool::new(MESSENGER)),
             data: Some(Data {
                 message: ManuallyDrop::new(self.0.take().unwrap()),
             }),
+            commander_waker: Some(waker),
+            commander_waker_locked: AtomicBool::new(false),
+            messenger_waker: None,
+            messenger_waker_locked: AtomicBool::new(false),
+            command: None,
+            message: None,
         };
         let internal = Box::leak(Box::new(internal));
         let output = (Commander(internal), Messenger(internal));
@@ -335,7 +465,7 @@ impl<Cmd: Unpin, Msg: Unpin> Future for Channel<Cmd, Msg> {
 /// Should be called on commander task.  Usually, the first message from the
 /// messenger task will be Ready for commands.
 #[inline(always)]
-pub fn channel<Cmd: Unpin, Msg: Unpin>(
+pub fn channel<Cmd: Unpin + Send, Msg: Unpin + Send>(
     ready: Msg,
 ) -> impl Future<Output = (Commander<Cmd, Msg>, Messenger<Cmd, Msg>)> {
     Channel(Some(ready), PhantomData)
@@ -344,13 +474,24 @@ pub fn channel<Cmd: Unpin, Msg: Unpin>(
 /// Communication from the [`Commander`].
 #[must_use]
 #[derive(Debug)]
-pub struct Command<Cmd, Msg> {
-    waker: ManuallyDrop<Waker>,
+pub struct Command<'a, Cmd: Send, Msg: Send> {
     inner: ManuallyDrop<Cmd>,
     internal: *mut Internal<Cmd, Msg>,
+    _phantom: PhantomData<&'a mut ()>,
 }
 
-impl<Cmd, Msg> Command<Cmd, Msg> {
+unsafe impl<Cmd: Send, Msg: Send> Send for Command<'_, Cmd, Msg> {}
+
+impl<Cmd: Send, Msg: Send> Drop for Command<'_, Cmd, Msg> {
+    #[inline(always)]
+    fn drop(&mut self) {
+        unsafe {
+            drop(ManuallyDrop::take(&mut self.inner));
+        }
+    }
+}
+
+impl<Cmd: Send, Msg: Send> Command<'_, Cmd, Msg> {
     /// Get the received command
     #[inline(always)]
     pub fn get(&self) -> &Cmd {
@@ -359,7 +500,7 @@ impl<Cmd, Msg> Command<Cmd, Msg> {
 
     /// Respond to the receieved command
     #[inline(always)]
-    pub fn respond(self, message: Msg) {
+    pub fn respond(self, message: Msg) -> impl Future<Output = ()> + Send {
         let mut command = self;
 
         unsafe {
@@ -369,52 +510,45 @@ impl<Cmd, Msg> Command<Cmd, Msg> {
             }
 
             // Release control to commander
-            (*command.internal).leased = false;
             (*command.internal)
                 .owner
                 .0
                 .store(COMMANDER, Ordering::Release);
-            ManuallyDrop::take(&mut command.waker).wake();
+            Internal::commander_wake(command.internal);
 
             // Manual drop of inner
             drop(ManuallyDrop::take(&mut command.inner));
         }
 
-        // Forget self
-        mem::forget(command);
-    }
+        let internal = command.internal;
+        core::mem::forget(command);
 
-    /// Respond by closing the channel.
-    #[inline(always)]
-    pub fn close(self, messenger: Messenger<Cmd, Msg>) {
-        let mut command = self;
-
-        unsafe {
-            // Release control to commander
-            (*command.internal).leased = false;
-            // Drop messenger,
-            drop(messenger);
-            // Notify commander
-            ManuallyDrop::take(&mut command.waker).wake();
-            // Manual drop of inner
-            drop(ManuallyDrop::take(&mut command.inner));
-        }
-
-        // Forget self
-        mem::forget(command);
+        // Create messenger future
+        seal::MessengerFuture(internal)
     }
 }
 
 /// Communication from the [`Messenger`].
 #[must_use]
 #[derive(Debug)]
-pub struct Message<Cmd, Msg> {
-    waker: ManuallyDrop<Waker>,
+pub struct Message<'a, Cmd: Send, Msg: Send> {
     inner: ManuallyDrop<Msg>,
     internal: *mut Internal<Cmd, Msg>,
+    _phantom: PhantomData<&'a mut ()>,
 }
 
-impl<Cmd, Msg> Message<Cmd, Msg> {
+unsafe impl<Cmd: Send, Msg: Send> Send for Message<'_, Cmd, Msg> {}
+
+impl<Cmd: Send, Msg: Send> Drop for Message<'_, Cmd, Msg> {
+    #[inline(always)]
+    fn drop(&mut self) {
+        unsafe {
+            drop(ManuallyDrop::take(&mut self.inner));
+        }
+    }
+}
+
+impl<Cmd: Send, Msg: Send> Message<'_, Cmd, Msg> {
     /// Get the received message
     #[inline(always)]
     pub fn get(&self) -> &Msg {
@@ -423,7 +557,7 @@ impl<Cmd, Msg> Message<Cmd, Msg> {
 
     /// Respond to the receieved message
     #[inline(always)]
-    pub fn respond(self, command: Cmd) {
+    pub fn respond(self, command: Cmd) -> impl Future<Output = ()> + Send {
         let mut message = self;
 
         unsafe {
@@ -433,38 +567,20 @@ impl<Cmd, Msg> Message<Cmd, Msg> {
             }
 
             // Release control to messenger
-            (*message.internal).leased = false;
             (*message.internal)
                 .owner
                 .0
                 .store(MESSENGER, Ordering::Release);
-            ManuallyDrop::take(&mut message.waker).wake();
+            Internal::messenger_wake(message.internal);
 
             // Manual drop of inner
             drop(ManuallyDrop::take(&mut message.inner));
         }
 
-        // Forget self
-        mem::forget(message);
-    }
+        let internal = message.internal;
+        core::mem::forget(message);
 
-    /// Respond by closing the channel.
-    #[inline(always)]
-    pub fn close(self, commander: Commander<Cmd, Msg>) {
-        let mut message = self;
-
-        unsafe {
-            // Release control to messenger
-            (*message.internal).leased = false;
-            // Drop commander
-            drop(commander);
-            // Notify messenger
-            ManuallyDrop::take(&mut message.waker).wake();
-            // Manual drop of inner
-            drop(ManuallyDrop::take(&mut message.inner));
-        }
-
-        // Forget self
-        mem::forget(message);
+        // Create commander future
+        seal::CommanderFuture(internal)
     }
 }
