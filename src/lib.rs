@@ -150,11 +150,15 @@ mod seal {
         ) -> Poll<Self::Output> {
             let this = &mut self.get_mut();
 
-            // Waker must be set before atomic load to avoid race condition
-            Internal::set_commander_waker(this.0, cx.waker().clone());
-
             unsafe {
+                // Must be locked before atomic load to avoid race condition
+                Internal::<Cmd, Msg>::acquire_lock(
+                    &(*this.0).commander_waker_locked,
+                );
                 if (*this.0).owner.0.load(Ordering::Acquire) == COMMANDER {
+                    Internal::<Cmd, Msg>::release_lock(
+                        &(*this.0).commander_waker_locked,
+                    );
                     let message = if let Some(ref mut data) = (*this.0).data {
                         Some(ManuallyDrop::new(ManuallyDrop::take(
                             &mut data.message,
@@ -170,6 +174,10 @@ mod seal {
                     });
                     Poll::Ready(())
                 } else {
+                    (*this.0).commander_waker = Some(cx.waker().clone());
+                    Internal::<Cmd, Msg>::release_lock(
+                        &(*this.0).commander_waker_locked,
+                    );
                     Poll::Pending
                 }
             }
@@ -186,18 +194,28 @@ mod seal {
         ) -> Poll<Self::Output> {
             let this = &mut self.get_mut();
 
-            // Waker must be set before atomic load to avoid race condition
-            Internal::set_messenger_waker(this.0, cx.waker().clone());
-
             unsafe {
+                // Must be locked before atomic load to avoid race condition
+                Internal::<Cmd, Msg>::acquire_lock(
+                    &(*this.0).messenger_waker_locked,
+                );
                 if (*this.0).owner.0.load(Ordering::Acquire) == MESSENGER {
                     if (*this.0).first {
+                        (*this.0).messenger_waker = Some(cx.waker().clone());
+                        Internal::<Cmd, Msg>::release_lock(
+                            &(*this.0).messenger_waker_locked,
+                        );
+
                         (*this.0).first = false;
                         (*this.0).owner.0.store(COMMANDER, Ordering::Release);
 
-                        Internal::commander_wake(this.0);
+                        Internal::<Cmd, Msg>::commander_wake(this.0);
 
                         return Poll::Pending;
+                    } else {
+                        Internal::<Cmd, Msg>::release_lock(
+                            &(*this.0).messenger_waker_locked,
+                        );
                     }
 
                     let command = if let Some(ref mut data) = (*this.0).data {
@@ -215,6 +233,10 @@ mod seal {
                     });
                     Poll::Ready(())
                 } else {
+                    (*this.0).messenger_waker = Some(cx.waker().clone());
+                    Internal::<Cmd, Msg>::release_lock(
+                        &(*this.0).messenger_waker_locked,
+                    );
                     Poll::Pending
                 }
             }
@@ -276,6 +298,11 @@ impl<Cmd: Send, Msg: Send> Internal<Cmd, Msg> {
     }
 
     #[inline(always)]
+    unsafe fn release_lock(lock: &AtomicBool) {
+        lock.store(false, Ordering::Release);
+    }
+
+    #[inline(always)]
     fn commander_wake(internal: *mut Self) {
         unsafe {
             // Acquire lock
@@ -283,9 +310,7 @@ impl<Cmd: Send, Msg: Send> Internal<Cmd, Msg> {
             // Take
             let waker = (*internal).commander_waker.take();
             // Release lock
-            (*internal)
-                .commander_waker_locked
-                .store(false, Ordering::Release);
+            Self::release_lock(&(*internal).commander_waker_locked);
             // Wake
             if let Some(waker) = waker {
                 waker.wake();
@@ -301,41 +326,11 @@ impl<Cmd: Send, Msg: Send> Internal<Cmd, Msg> {
             // Take
             let waker = (*internal).messenger_waker.take();
             // Release lock
-            (*internal)
-                .messenger_waker_locked
-                .store(false, Ordering::Release);
+            Self::release_lock(&(*internal).messenger_waker_locked);
             // Wake
             if let Some(waker) = waker {
                 waker.wake();
             }
-        }
-    }
-
-    #[inline(always)]
-    fn set_commander_waker(internal: *mut Self, waker: Waker) {
-        unsafe {
-            // Acquire lock
-            Self::acquire_lock(&(*internal).commander_waker_locked);
-            // Insert new waker
-            (*internal).commander_waker = Some(waker);
-            // Release lock
-            (*internal)
-                .commander_waker_locked
-                .store(false, Ordering::Release);
-        }
-    }
-
-    #[inline(always)]
-    fn set_messenger_waker(internal: *mut Self, waker: Waker) {
-        unsafe {
-            // Acquire lock
-            Self::acquire_lock(&(*internal).messenger_waker_locked);
-            // Insert new waker
-            (*internal).messenger_waker = Some(waker);
-            // Release lock
-            (*internal)
-                .messenger_waker_locked
-                .store(false, Ordering::Release);
         }
     }
 }
