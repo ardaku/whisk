@@ -77,6 +77,7 @@
 //!     println!("Messenger thread joined");
 //! }
 //!
+//! # #[ntest::timeout(1000)]
 //! // Call into executor of your choice
 //! fn main() {
 //!     pasts::block_on(commander_task())
@@ -264,7 +265,7 @@ impl<Cmd: Send, Msg: Send> Internal<Cmd, Msg> {
             .compare_exchange_weak(
                 false,
                 true,
-                Ordering::Acquire,
+                Ordering::SeqCst,
                 Ordering::Relaxed,
             )
             .is_err()
@@ -279,14 +280,18 @@ impl<Cmd: Send, Msg: Send> Internal<Cmd, Msg> {
         unsafe {
             // Acquire lock
             Self::acquire_lock(&(*internal).commander_waker_locked);
-            // Take & wake
-            if let Some(waker) = (*internal).commander_waker.take() {
-                waker.wake();
-            }
+            // Take
+            let waker = (*internal).commander_waker.take();
             // Release lock
             (*internal)
                 .commander_waker_locked
                 .store(false, Ordering::Release);
+            // Wake
+            if let Some(waker) = waker {
+                waker.wake();
+            } else {
+                unreachable!();
+            }
         }
     }
 
@@ -295,14 +300,18 @@ impl<Cmd: Send, Msg: Send> Internal<Cmd, Msg> {
         unsafe {
             // Acquire lock
             Self::acquire_lock(&(*internal).messenger_waker_locked);
-            // Take & wake
-            if let Some(waker) = (*internal).messenger_waker.take() {
-                waker.wake();
-            }
+            // Take
+            let waker = (*internal).messenger_waker.take();
             // Release lock
             (*internal)
                 .messenger_waker_locked
                 .store(false, Ordering::Release);
+            // Wake
+            if let Some(waker) = waker {
+                waker.wake();
+            } else {
+                unreachable!();
+            }
         }
     }
 
