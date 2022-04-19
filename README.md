@@ -11,14 +11,14 @@
 A simple and fast two-way async channel.
 
 ## Benchmarks
-Initial benchmarks for v0.1.0:
+Benchmarks for v0.2.0:
 
 ```
-function/call           time:   [1.5397 ns 1.5445 ns 1.5493 ns]
-extern/call             time:   [1.5522 ns 1.5566 ns 1.5612 ns]
-ffi/call                time:   [2.3279 ns 2.3406 ns 2.3521 ns]
-whisk/call              time:   [128.41 ns 128.79 ns 129.15 ns]
-flume/call              time:   [461.08 ns 462.58 ns 464.00 ns]
-whisk/threads           time:   [7.2141 us 7.2827 us 7.3575 us]
-flume/threads           time:   [7.4545 us 7.6034 us 7.7496 us]
+function/call           [1.5749 ns 1.5818 ns 1.5887 ns]
+extern/call             [1.5249 ns 1.5355 ns 1.5452 ns]
+ffi/call                [2.9104 ns 3.3309 ns 3.8884 ns]
+whisk/call              [213.22 ns 214.15 ns 215.03 ns]
+flume/call              [512.15 ns 537.62 ns 572.21 ns]
+whisk/threads           [10.455 us 12.039 us 14.052 us]
+flume/threads           [13.157 us 15.460 us 18.298 us]
 ```
