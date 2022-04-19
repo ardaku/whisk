@@ -42,15 +42,15 @@ mod channel {
 
     pub(super) struct Proxy {
         commander: Commander<Cmd, Msg>,
-        pub(super) message: Option<whisk::Message<Cmd, Msg>>,
+        pub(super) message: Option<whisk::Message<'static, Cmd, Msg>>,
     }
 
     impl Proxy {
         #[inline(always)]
-        pub(super) async fn do_addition(&mut self, a: u32, b: u32) -> u32 {
+        pub(super) async fn do_addition(&'static mut self, a: u32, b: u32) -> u32 {
             let message = self.message.take().unwrap();
-            message.respond(Cmd::Add(a, b));
-            let message = (&mut self.commander).await;
+            message.respond(Cmd::Add(a, b)).await;
+            let message = (&mut self.commander).next();
             match message {
                 Some(msg) => match *msg.get() {
                     Msg::Output(v) => {
@@ -63,10 +63,10 @@ mod channel {
             }
         }
 
-        pub(super) async fn close(&mut self) {
+        pub(super) async fn close(&'static mut self) {
             let message = self.message.take().unwrap();
-            message.respond(Cmd::Exit);
-            let message = (&mut self.commander).await;
+            message.respond(Cmd::Exit).await;
+            let message = (&mut self.commander).next();
             match message {
                 None => {}
                 _ => unreachable!(),
@@ -76,35 +76,40 @@ mod channel {
 
     pub(super) async fn messenger_task(mut messenger: Messenger<Cmd, Msg>) {
         // Receive command from commander
-        while let Some(command) = (&mut messenger).await {
-            match *command.get() {
-                Cmd::Add(a, b) => command.respond(Msg::Output(a + b)),
-                Cmd::Exit => {
-                    command.close(messenger);
-                    return;
-                }
-            }
+        messenger.start().await;
+        for command in &mut messenger {
+            let responder = match command.get() {
+                Cmd::Add(a, b) => {
+                    let evaluated = *a + *b;
+                    command.respond(Msg::Output(evaluated))
+                },
+                Cmd::Exit => return,
+            };
+            responder.await;
         }
         unreachable!()
     }
 
     pub(super) async fn commander_task(
-        mut commander: Commander<Cmd, Msg>,
-    ) -> Proxy {
+        commander: Commander<Cmd, Msg>,
+    ) -> &'static mut Proxy {
+        let message = None;
+        let mut proxy = Box::new(Proxy { message, commander });
+
         // Wait for Ready message, and respond with Exit command
-        while let Some(message) = (&mut commander).await {
+        proxy.commander.start().await;
+        let commander: &'static mut Commander<Cmd, Msg> = unsafe { &mut *(&mut proxy.commander as *mut _) };
+        for message in commander {
             match message.get() {
                 Msg::Ready => {
-                    return Proxy {
-                        message: Some(message),
-                        commander,
-                    };
-                }
+                    proxy.message = Some(message);
+                    break;
+                },
                 _ => unreachable!(),
             }
         }
 
-        unreachable!()
+        Box::leak(proxy)
     }
 }
 
@@ -130,14 +135,14 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 .unwrap(),
         )
     };
-    let mut proxy = futures::executor::block_on(async {
+    let proxy = futures::executor::block_on(async {
         let (commander, messenger) = whisk::channel(channel::Msg::Ready).await;
         let messenger = channel::messenger_task(messenger);
         std::thread::spawn(|| pasts::block_on(messenger));
         channel::commander_task(commander).await
     });
 
-    let (mut proxy_single, mut task) = futures::executor::block_on(async {
+    let (proxy_single, mut task) = futures::executor::block_on(async {
         let (commander, messenger) = whisk::channel(channel::Msg::Ready).await;
         let mut messenger = Box::pin(channel::messenger_task(messenger));
         let _ = futures::poll!(&mut messenger);
@@ -204,8 +209,8 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             .iter(|| async { unsafe { ffi_addition(args.0, args.1) } });
     });
 
-    let args: *mut _ = &mut (453, 198_231_014, &mut proxy);
-    let argz: *mut _ = &mut (453, 198_231_014, &mut proxy_single, &mut task);
+    let args: *mut _ = &mut (453, 198_231_014, proxy);
+    let argz: *mut _ = &mut (453, 198_231_014, proxy_single, &mut task);
 
     c.bench_with_input(BenchmarkId::new("whisk", "call"), &argz, |z, args| {
         use futures::FutureExt;
