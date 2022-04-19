@@ -265,7 +265,7 @@ impl<Cmd: Send, Msg: Send> Internal<Cmd, Msg> {
             .compare_exchange_weak(
                 false,
                 true,
-                Ordering::SeqCst,
+                Ordering::Acquire,
                 Ordering::Relaxed,
             )
             .is_err()
