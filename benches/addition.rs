@@ -47,7 +47,11 @@ mod channel {
 
     impl Proxy {
         #[inline(always)]
-        pub(super) async fn do_addition(&'static mut self, a: u32, b: u32) -> u32 {
+        pub(super) async fn do_addition(
+            &'static mut self,
+            a: u32,
+            b: u32,
+        ) -> u32 {
             let message = self.message.take().unwrap();
             message.respond(Cmd::Add(a, b)).await;
             let message = (&mut self.commander).next();
@@ -82,7 +86,7 @@ mod channel {
                 Cmd::Add(a, b) => {
                     let evaluated = *a + *b;
                     command.respond(Msg::Output(evaluated))
-                },
+                }
                 Cmd::Exit => return,
             };
             responder.await;
@@ -98,13 +102,14 @@ mod channel {
 
         // Wait for Ready message, and respond with Exit command
         proxy.commander.start().await;
-        let commander: &'static mut Commander<Cmd, Msg> = unsafe { &mut *(&mut proxy.commander as *mut _) };
+        let commander: &'static mut Commander<Cmd, Msg> =
+            unsafe { &mut *(&mut proxy.commander as *mut _) };
         for message in commander {
             match message.get() {
                 Msg::Ready => {
                     proxy.message = Some(message);
                     break;
-                },
+                }
                 _ => unreachable!(),
             }
         }
