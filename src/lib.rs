@@ -150,6 +150,9 @@ mod seal {
         ) -> Poll<Self::Output> {
             let this = &mut self.get_mut();
 
+            // Waker must be set before atomic load to avoid race condition
+            Internal::set_commander_waker(this.0, cx.waker().clone());
+
             unsafe {
                 if (*this.0).owner.0.load(Ordering::Acquire) == COMMANDER {
                     let message = if let Some(ref mut data) = (*this.0).data {
@@ -167,7 +170,6 @@ mod seal {
                     });
                     Poll::Ready(())
                 } else {
-                    Internal::set_commander_waker(this.0, cx.waker().clone());
                     Poll::Pending
                 }
             }
@@ -184,16 +186,15 @@ mod seal {
         ) -> Poll<Self::Output> {
             let this = &mut self.get_mut();
 
+            // Waker must be set before atomic load to avoid race condition
+            Internal::set_messenger_waker(this.0, cx.waker().clone());
+
             unsafe {
                 if (*this.0).owner.0.load(Ordering::Acquire) == MESSENGER {
                     if (*this.0).first {
                         (*this.0).first = false;
                         (*this.0).owner.0.store(COMMANDER, Ordering::Release);
 
-                        Internal::set_messenger_waker(
-                            this.0,
-                            cx.waker().clone(),
-                        );
                         Internal::commander_wake(this.0);
 
                         return Poll::Pending;
@@ -214,7 +215,6 @@ mod seal {
                     });
                     Poll::Ready(())
                 } else {
-                    Internal::set_messenger_waker(this.0, cx.waker().clone());
                     Poll::Pending
                 }
             }
@@ -289,8 +289,6 @@ impl<Cmd: Send, Msg: Send> Internal<Cmd, Msg> {
             // Wake
             if let Some(waker) = waker {
                 waker.wake();
-            } else {
-                unreachable!();
             }
         }
     }
@@ -309,8 +307,6 @@ impl<Cmd: Send, Msg: Send> Internal<Cmd, Msg> {
             // Wake
             if let Some(waker) = waker {
                 waker.wake();
-            } else {
-                unreachable!();
             }
         }
     }
