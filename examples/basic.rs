@@ -42,7 +42,9 @@ async fn commander_task() {
 
     // Start messenger task on another thread
     let messenger = messenger_task(messenger);
-    let messenger = std::thread::spawn(|| pasts::block_on(messenger));
+    let messenger = std::thread::spawn(|| {
+        pasts::Executor::default().spawn(Box::pin(messenger))
+    });
 
     // Wait for Ready message, and respond with Exit command
     println!("Commander waiting ready message…");
@@ -69,5 +71,5 @@ async fn commander_task() {
 
 // Call into executor of your choice
 fn main() {
-    pasts::block_on(commander_task())
+    pasts::Executor::default().spawn(Box::pin(commander_task()))
 }
