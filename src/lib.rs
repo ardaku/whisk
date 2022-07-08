@@ -112,6 +112,8 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
+mod asym;
+
 use alloc::boxed::Box;
 use core::{
     future::Future,
@@ -123,6 +125,8 @@ use core::{
 };
 #[cfg(feature = "std")]
 use std::thread;
+
+pub use asym::{Channel, Receiver, Sender};
 
 // Sealed futures
 mod seal {
@@ -427,9 +431,9 @@ impl<Cmd: Send, Msg: Send> Drop for Messenger<Cmd, Msg> {
     }
 }
 
-struct Channel<Cmd: Unpin, Msg: Unpin>(Option<Msg>, PhantomData<Cmd>);
+struct Channel2<Cmd: Unpin, Msg: Unpin>(Option<Msg>, PhantomData<Cmd>);
 
-impl<Cmd: Unpin + Send, Msg: Unpin + Send> Future for Channel<Cmd, Msg> {
+impl<Cmd: Unpin + Send, Msg: Unpin + Send> Future for Channel2<Cmd, Msg> {
     type Output = (Commander<Cmd, Msg>, Messenger<Cmd, Msg>);
 
     #[inline(always)]
@@ -466,7 +470,7 @@ impl<Cmd: Unpin + Send, Msg: Unpin + Send> Future for Channel<Cmd, Msg> {
 pub fn channel<Cmd: Unpin + Send, Msg: Unpin + Send>(
     ready: Msg,
 ) -> impl Future<Output = (Commander<Cmd, Msg>, Messenger<Cmd, Msg>)> {
-    Channel(Some(ready), PhantomData)
+    Channel2(Some(ready), PhantomData)
 }
 
 /// Communication from the [`Commander`].
