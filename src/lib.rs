@@ -91,7 +91,7 @@ mod asym;
 
 pub use asym::{Channel, Receiver, Sender};
 
-/// Handle to a worker
+/// Handle to a worker - command consumer (spsc-rendezvous channel)
 #[derive(Debug)]
 pub struct Worker<T: Send>(Sender<Option<T>>);
 
@@ -123,7 +123,7 @@ impl<T: Send> Drop for Worker<T> {
     }
 }
 
-/// Handle to a tasker
+/// Handle to a tasker - command producer (spsc-rendezvous channel)
 #[derive(Debug)]
 pub struct Tasker<T: Send>(Receiver<Option<T>>);
 

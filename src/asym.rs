@@ -47,12 +47,7 @@ impl<T: Send> Sender<T> {
             {
                 core::hint::spin_loop();
             }
-            // Now that it's updated, send wake event
-            //
-            // Safety (guaranteed by `Box::leak(Box::new(t))`):
-            //  - pointer is guaranteed to be valid
-            //  - pointer is aligned
-            //  - pointer is initialized
+            // Wake by reference
             (*self.0).waker.wake_by_ref();
             // Once awoken, spin lock until message is sent successfully
             while (*self.0)
@@ -121,6 +116,7 @@ impl<T: Send> Future for Receiver<T> {
                 let message: T =
                     core::ptr::read((*(*self.0).msg.get_mut()).cast());
                 (*self.0).lock.store(false, Release);
+                // FIXME: Move to drop of Channel by adding InnerChannel
                 // spinlock to allow box to be dropped
                 while (*self.0)
                     .lock
@@ -177,11 +173,11 @@ impl Channel {
 }
 
 #[inline]
-unsafe fn do_nothing(_: *const ()) {}
+const unsafe fn do_nothing(_: *const ()) {}
 
 #[inline]
-unsafe fn get_coma(_: *const ()) -> RawWaker {
-    RawWaker::new(core::ptr::null(), &COMA)
+const unsafe fn get_coma(ptr: *const ()) -> RawWaker {
+    RawWaker::new(ptr, &COMA)
 }
 
 const COMA: RawWakerVTable =
