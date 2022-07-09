@@ -3,7 +3,7 @@ use core::{
     future::Future,
     marker::PhantomData,
     pin::Pin,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicPtr, Ordering},
     task::{
         Context, Poll,
         Poll::{Pending, Ready},
@@ -20,16 +20,23 @@ pub struct Sender<T: Send>(*mut Channel, PhantomData<*mut T>);
 unsafe impl<T: Send> Send for Sender<T> {}
 
 impl<T: Send> Sender<T> {
+    /// Force dropping
+    #[inline]
+    pub(crate) fn unuse(&self) {
+        std::println!("SND unuse flag");
+        unsafe { (*self.0).msg.store(core::ptr::null_mut(), Ordering::SeqCst) }
+    }
+
     /// Send a message
     #[inline]
     pub(crate) fn send_and_reuse(&self, message: T) {
         // Inhibit drop because we're transferring data
-        let message = core::mem::ManuallyDrop::new(message);
+        let mut message = core::mem::ManuallyDrop::new(message);
 
         unsafe {
             // Set address for reading
-            let addr: *const _ = &*message;
-            (*self.0).msg = addr.cast();
+            let addr: *mut _ = &mut *message;
+            (*self.0).msg = AtomicPtr::from(addr.cast());
             // Spin lock until Waker is updated
             while (*self.0)
                 .lock
@@ -50,7 +57,7 @@ impl<T: Send> Sender<T> {
             //  - pointer is aligned
             //  - pointer is initialized
             std::println!("Waking");
-            core::ptr::read(&(*self.0).waker).wake();
+            (*self.0).waker.wake_by_ref();
             std::println!("Spinning");
             // Once awoken, spin lock until message is sent successfully
             while (*self.0)
@@ -86,6 +93,21 @@ unsafe impl<T: Send> Send for Receiver<T> {}
 
 impl<T: Send> Receiver<T> {
     #[inline]
+    pub(crate) fn unuse(&self) {
+        unsafe {
+            std::println!("RCV unuse Spinning");
+            // spin
+            while !(*self.0).msg.load(Ordering::SeqCst).is_null() {
+                core::hint::spin_loop();
+            }
+            std::println!("RCV unuse Dropping");
+            // drop
+            Box::from_raw(self.0);
+            std::println!("RCV unuse Dropped");
+        }
+    }
+
+    #[inline]
     pub(crate) async fn recv_and_reuse(&self) -> T {
         let clone = Receiver(self.0, PhantomData);
         let (val, chan) = clone.await;
@@ -111,7 +133,8 @@ impl<T: Send> Future for Receiver<T> {
         unsafe {
             if (*self.0).lock.fetch_or(true, Ordering::SeqCst) {
                 std::println!("Reading ref");
-                let message: T = core::ptr::read((*self.0).msg.cast());
+                let message: T =
+                    core::ptr::read((*(*self.0).msg.get_mut()).cast());
                 std::println!("Read ref");
                 (*self.0).lock.store(false, Ordering::Release);
                 // spinlock to allow box to be dropped
@@ -142,7 +165,7 @@ impl<T: Send> Future for Receiver<T> {
 pub struct Channel {
     lock: AtomicBool,
     waker: Waker,
-    msg: *const (),
+    msg: AtomicPtr<()>,
 }
 
 unsafe impl Send for Channel {}
@@ -151,11 +174,13 @@ impl Channel {
     /// Create an asynchronous oneshot-rendezvous channel
     #[inline]
     pub fn pair<T: Send>() -> (Sender<T>, Receiver<T>) {
-        let channel = Self {
+        let mut channel = Self {
             lock: false.into(),
             waker: coma(),
-            msg: core::ptr::null(),
+            msg: core::ptr::null_mut::<()>().into(),
         };
+        // Non-null unused junk pointer
+        channel.msg = core::ptr::addr_of_mut!(channel).cast::<()>().into();
         let channel = Box::leak(Box::new(channel));
 
         (Sender(channel, PhantomData), Receiver(channel, PhantomData))
@@ -172,8 +197,10 @@ impl Channel {
     }
 }
 
+#[inline]
 unsafe fn do_nothing(_: *const ()) {}
 
+#[inline]
 unsafe fn get_coma(_: *const ()) -> RawWaker {
     RawWaker::new(core::ptr::null(), &COMA)
 }

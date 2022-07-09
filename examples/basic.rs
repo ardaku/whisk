@@ -17,6 +17,8 @@ async fn worker(tasker: Tasker<Cmd>) {
     }
 
     println!("Worker stopping…");
+    drop(tasker);
+    println!("Worker stopped…");
 }
 
 async fn tasker() {
@@ -41,6 +43,11 @@ async fn tasker() {
     // Tell worker to stop
     println!("Stopping worker…");
     worker.send(Cmd::Stop);
+
+    // Close channel
+    println!("Closing channel…");
+    drop(worker);
+    println!("Closed channel…");
 
     worker_thread.unwrap().join().unwrap();
     println!("Worker thread joined");

@@ -151,7 +151,9 @@ impl<T: Send> Worker<T> {
 }
 
 impl<T: Send> Drop for Worker<T> {
-    fn drop(&mut self) {}
+    fn drop(&mut self) {
+        self.0.unuse();
+    }
 }
 
 /// Handle to a tasker
@@ -166,7 +168,9 @@ impl<T: Send> Tasker<T> {
 }
 
 impl<T: Send> Drop for Tasker<T> {
-    fn drop(&mut self) {}
+    fn drop(&mut self) {
+        self.0.unuse();
+    }
 }
 
 /*
