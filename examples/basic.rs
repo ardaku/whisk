@@ -17,8 +17,6 @@ async fn worker(tasker: Tasker<Cmd>) {
     }
 
     println!("Worker stopping…");
-    drop(tasker);
-    println!("Worker stopped…");
 }
 
 async fn tasker() {

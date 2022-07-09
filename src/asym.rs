@@ -23,7 +23,6 @@ impl<T: Send> Sender<T> {
     /// Force dropping
     #[inline]
     pub(crate) fn unuse(&self) {
-        std::println!("SND unuse flag");
         unsafe { (*self.0).msg.store(core::ptr::null_mut(), Ordering::SeqCst) }
     }
 
@@ -56,9 +55,7 @@ impl<T: Send> Sender<T> {
             //  - pointer is guaranteed to be valid
             //  - pointer is aligned
             //  - pointer is initialized
-            std::println!("Waking");
             (*self.0).waker.wake_by_ref();
-            std::println!("Spinning");
             // Once awoken, spin lock until message is sent successfully
             while (*self.0)
                 .lock
@@ -73,7 +70,6 @@ impl<T: Send> Sender<T> {
                 core::hint::spin_loop();
             }
         }
-        std::println!("Invalidating ref");
     }
 
     /// Send a message
@@ -95,15 +91,12 @@ impl<T: Send> Receiver<T> {
     #[inline]
     pub(crate) fn unuse(&self) {
         unsafe {
-            std::println!("RCV unuse Spinning");
             // spin
             while !(*self.0).msg.load(Ordering::SeqCst).is_null() {
                 core::hint::spin_loop();
             }
-            std::println!("RCV unuse Dropping");
             // drop
             Box::from_raw(self.0);
-            std::println!("RCV unuse Dropped");
         }
     }
 
@@ -132,10 +125,8 @@ impl<T: Send> Future for Receiver<T> {
     ) -> Poll<Self::Output> {
         unsafe {
             if (*self.0).lock.fetch_or(true, Ordering::SeqCst) {
-                std::println!("Reading ref");
                 let message: T =
                     core::ptr::read((*(*self.0).msg.get_mut()).cast());
-                std::println!("Read ref");
                 (*self.0).lock.store(false, Ordering::Release);
                 // spinlock to allow box to be dropped
                 while (*self.0)
