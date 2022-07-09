@@ -3,16 +3,13 @@ use whisk::{Channel, Sender, Tasker, Worker};
 enum Cmd {
     /// Tell messenger to add
     Add(u32, u32, Sender<u32>),
-    /// Tell messenger to quit
-    Stop,
 }
 
 async fn worker(tasker: Tasker<Cmd>) {
-    loop {
+    while let Some(command) = tasker.recv_next().await {
         println!("Worker receiving command");
-        match tasker.recv_next().await {
+        match command {
             Cmd::Add(a, b, s) => s.send(a + b),
-            Cmd::Stop => break,
         }
     }
 
@@ -39,13 +36,9 @@ async fn tasker() {
     assert_eq!(response, 443);
 
     // Tell worker to stop
-    println!("Stopping worker…");
-    worker.send(Cmd::Stop);
-
-    // Close channel
-    println!("Closing channel…");
-    drop(worker);
-    println!("Closed channel…");
+    println!("Telling worker to stop…");
+    worker.stop();
+    println!("Waiting for worker to stop…");
 
     worker_thread.unwrap().join().unwrap();
     println!("Worker thread joined");
