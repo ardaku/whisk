@@ -114,20 +114,62 @@ extern crate std;
 
 mod asym;
 
-use alloc::boxed::Box;
-use core::{
+//use alloc::boxed::Box;
+/*use core::{
     future::Future,
     marker::PhantomData,
     mem::ManuallyDrop,
     pin::Pin,
     sync::atomic::{AtomicBool, Ordering},
     task::{Context, Poll, Waker},
-};
-#[cfg(feature = "std")]
-use std::thread;
+};*/
+//#[cfg(feature = "std")]
+//use std::thread;
 
 pub use asym::{Channel, Receiver, Sender};
 
+/// Handle to a worker
+#[derive(Debug)]
+pub struct Worker<T: Send>(Sender<T>);
+
+impl<T: Send> Worker<T> {
+    /// Start up a worker (similar to the actor concept).
+    pub fn new(cb: impl FnOnce(Tasker<T>)) -> Self {
+        let (sender, receiver) = Channel::pair();
+
+        // Launch worker
+        cb(Tasker(receiver));
+
+        // Return worker handle
+        Self(sender)
+    }
+
+    /// Send an command to the worker.
+    pub fn send(&self, cmd: T) {
+        self.0.send_and_reuse(cmd);
+    }
+}
+
+impl<T: Send> Drop for Worker<T> {
+    fn drop(&mut self) {}
+}
+
+/// Handle to a tasker
+#[derive(Debug)]
+pub struct Tasker<T: Send>(Receiver<T>);
+
+impl<T: Send> Tasker<T> {
+    /// Get the next command from the tasker
+    pub async fn recv_next(&self) -> T {
+        self.0.recv_and_reuse().await
+    }
+}
+
+impl<T: Send> Drop for Tasker<T> {
+    fn drop(&mut self) {}
+}
+
+/*
 // Sealed futures
 mod seal {
     use super::*;
@@ -549,4 +591,4 @@ impl<Cmd: Send, Msg: Send> Message<'_, Cmd, Msg> {
         // Create commander future
         seal::CommanderFuture(internal)
     }
-}
+}*/
