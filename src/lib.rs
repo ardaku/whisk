@@ -102,7 +102,7 @@ impl<T: Send> Worker<T> {
         let (sender, receiver) = Channel::pair();
 
         // Launch worker
-        cb(Tasker(receiver));
+        cb(Tasker(Some(receiver)));
 
         // Return worker handle
         Self(sender)
@@ -119,25 +119,32 @@ impl<T: Send> Drop for Worker<T> {
     #[inline]
     fn drop(&mut self) {
         self.0.send_and_reuse(None);
-        self.0.unuse();
     }
 }
 
 /// Handle to a tasker - command producer (spsc-rendezvous channel)
 #[derive(Debug)]
-pub struct Tasker<T: Send>(Receiver<Option<T>>);
+pub struct Tasker<T: Send>(Option<Receiver<Option<T>>>);
 
 impl<T: Send> Tasker<T> {
     /// Get the next command from the tasker, returns [`None`] on stop
     #[inline]
-    pub async fn recv_next(&self) -> Option<T> {
-        self.0.recv_and_reuse().await
+    pub async fn recv_next(&mut self) -> Option<T> {
+        let recver = self.0.as_ref()?;
+        let value = recver.recv_and_reuse().await;
+        if value.is_none() {
+            unsafe { recver.unuse() };
+            self.0 = None;
+        }
+        value
     }
 }
 
 impl<T: Send> Drop for Tasker<T> {
     #[inline]
     fn drop(&mut self) {
-        self.0.unuse();
+        if self.0.is_some() {
+            panic!("Tasker dropped before Worker");
+        }
     }
 }

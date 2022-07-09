@@ -23,12 +23,6 @@ pub struct Sender<T: Send>(*mut Channel, PhantomData<*mut T>);
 unsafe impl<T: Send> Send for Sender<T> {}
 
 impl<T: Send> Sender<T> {
-    /// Force dropping
-    #[inline]
-    pub(crate) fn unuse(&self) {
-        unsafe { (*self.0).msg.store(core::ptr::null_mut(), Release) }
-    }
-
     /// Send a message
     #[inline]
     pub(crate) fn send_and_reuse(&self, message: T) {
@@ -77,15 +71,8 @@ unsafe impl<T: Send> Send for Receiver<T> {}
 
 impl<T: Send> Receiver<T> {
     #[inline]
-    pub(crate) fn unuse(&self) {
-        unsafe {
-            // spin
-            while !(*self.0).msg.load(Acquire).is_null() {
-                core::hint::spin_loop();
-            }
-            // drop
-            Box::from_raw(self.0);
-        }
+    pub(crate) unsafe fn unuse(&self) {
+        Box::from_raw(self.0);
     }
 
     #[inline]

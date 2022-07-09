@@ -5,7 +5,7 @@ enum Cmd {
     Add(u32, u32, Sender<u32>),
 }
 
-async fn worker(tasker: Tasker<Cmd>) {
+async fn worker(mut tasker: Tasker<Cmd>) {
     while let Some(command) = tasker.recv_next().await {
         println!("Worker receiving command");
         match command {
