@@ -23,7 +23,7 @@ impl<T: Send> Sender<T> {
     /// Force dropping
     #[inline]
     pub(crate) fn unuse(&self) {
-        unsafe { (*self.0).msg.store(core::ptr::null_mut(), Ordering::SeqCst) }
+        unsafe { (*self.0).msg.store(core::ptr::null_mut(), Ordering::Release) }
     }
 
     /// Send a message
@@ -42,8 +42,8 @@ impl<T: Send> Sender<T> {
                 .compare_exchange_weak(
                     false,
                     true,
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
                 )
                 .is_err()
             {
@@ -62,8 +62,8 @@ impl<T: Send> Sender<T> {
                 .compare_exchange_weak(
                     false,
                     true,
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
                 )
                 .is_err()
             {
@@ -92,7 +92,7 @@ impl<T: Send> Receiver<T> {
     pub(crate) fn unuse(&self) {
         unsafe {
             // spin
-            while !(*self.0).msg.load(Ordering::SeqCst).is_null() {
+            while !(*self.0).msg.load(Ordering::Acquire).is_null() {
                 core::hint::spin_loop();
             }
             // drop
@@ -124,7 +124,7 @@ impl<T: Send> Future for Receiver<T> {
         cx: &mut Context<'_>,
     ) -> Poll<Self::Output> {
         unsafe {
-            if (*self.0).lock.fetch_or(true, Ordering::SeqCst) {
+            if (*self.0).lock.fetch_or(true, Ordering::Acquire) {
                 let message: T =
                     core::ptr::read((*(*self.0).msg.get_mut()).cast());
                 (*self.0).lock.store(false, Ordering::Release);
@@ -134,8 +134,8 @@ impl<T: Send> Future for Receiver<T> {
                     .compare_exchange_weak(
                         true,
                         false,
-                        Ordering::SeqCst,
-                        Ordering::SeqCst,
+                        Ordering::AcqRel,
+                        Ordering::Relaxed,
                     )
                     .is_err()
                 {
