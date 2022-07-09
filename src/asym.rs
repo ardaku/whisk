@@ -3,6 +3,7 @@ use core::{
     future::Future,
     marker::PhantomData,
     pin::Pin,
+    ptr::NonNull,
     sync::atomic::{
         AtomicBool, AtomicPtr,
         Ordering::{AcqRel, Acquire, Relaxed, Release},
@@ -18,7 +19,7 @@ use core::{
 ///
 /// Created from a [`Channel`] context.
 #[derive(Debug)]
-pub struct Sender<T: Send>(*mut Channel, PhantomData<*mut T>);
+pub struct Sender<T: Send>(NonNull<Channel>, PhantomData<*mut T>);
 
 unsafe impl<T: Send> Send for Sender<T> {}
 
@@ -32,9 +33,9 @@ impl<T: Send> Sender<T> {
         unsafe {
             // Set address for reading
             let addr: *mut _ = &mut *message;
-            (*self.0).msg = AtomicPtr::from(addr.cast());
+            (*self.0.as_ptr()).msg = AtomicPtr::from(addr.cast());
             // Spin lock until Waker is updated
-            while (*self.0)
+            while (*self.0.as_ptr())
                 .lock
                 .compare_exchange_weak(false, true, AcqRel, Relaxed)
                 .is_err()
@@ -42,9 +43,9 @@ impl<T: Send> Sender<T> {
                 core::hint::spin_loop();
             }
             // Wake by reference
-            (*self.0).waker.wake_by_ref();
+            (*self.0.as_ptr()).waker.wake_by_ref();
             // Once awoken, spin lock until message is sent successfully
-            while (*self.0)
+            while (*self.0.as_ptr())
                 .lock
                 .compare_exchange_weak(false, true, AcqRel, Relaxed)
                 .is_err()
@@ -65,14 +66,14 @@ impl<T: Send> Sender<T> {
 ///
 /// Created from a [`Channel`] context.
 #[derive(Debug)]
-pub struct Receiver<T: Send>(*mut Channel, PhantomData<*mut T>);
+pub struct Receiver<T: Send>(NonNull<Channel>, PhantomData<*mut T>);
 
 unsafe impl<T: Send> Send for Receiver<T> {}
 
 impl<T: Send> Receiver<T> {
     #[inline]
     pub(crate) unsafe fn unuse(&self) {
-        Box::from_raw(self.0);
+        Box::from_raw(self.0.as_ptr());
     }
 
     #[inline]
@@ -94,28 +95,25 @@ impl<T: Send> Future for Receiver<T> {
     type Output = (T, Box<Channel>);
 
     #[inline]
-    fn poll(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         unsafe {
-            if (*self.0).lock.fetch_or(true, Acquire) {
+            if (*self.0.as_ptr()).lock.fetch_or(true, Acquire) {
                 let message: T =
-                    core::ptr::read((*(*self.0).msg.get_mut()).cast());
-                (*self.0).lock.store(false, Release);
+                    core::ptr::read((*(*self.0.as_ptr()).msg.get_mut()).cast());
+                (*self.0.as_ptr()).lock.store(false, Release);
                 // FIXME: Move to drop of Channel by adding InnerChannel
                 // spinlock to allow box to be dropped
-                while (*self.0)
+                while (*self.0.as_ptr())
                     .lock
                     .compare_exchange_weak(true, false, AcqRel, Relaxed)
                     .is_err()
                 {
                     core::hint::spin_loop();
                 }
-                Ready((message, Box::from_raw(self.0)))
+                Ready((message, Box::from_raw(self.0.as_ptr())))
             } else {
-                (*self.0).waker = cx.waker().clone();
-                (*self.0).lock.store(false, Release);
+                (*self.0.as_ptr()).waker = cx.waker().clone();
+                (*self.0.as_ptr()).lock.store(false, Release);
                 Pending
             }
         }
@@ -143,7 +141,7 @@ impl Channel {
         };
         // Non-null unused junk pointer
         channel.msg = core::ptr::addr_of_mut!(channel).cast::<()>().into();
-        let channel = Box::leak(Box::new(channel));
+        let channel = Box::leak(Box::new(channel)).into();
 
         (Sender(channel, PhantomData), Receiver(channel, PhantomData))
     }
@@ -153,7 +151,7 @@ impl Channel {
     pub fn to_pair<T: Send>(mut self: Box<Self>) -> (Sender<T>, Receiver<T>) {
         self.waker = coma();
 
-        let channel = Box::leak(self);
+        let channel = Box::leak(self).into();
 
         (Sender(channel, PhantomData), Receiver(channel, PhantomData))
     }
