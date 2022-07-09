@@ -46,8 +46,8 @@
 //!     assert_eq!(response, 443);
 //!
 //!     // Tell worker to stop
-//!     println!("Telling worker to stop…");
-//!     worker.stop();
+//!     println!("Dropping worker…");
+//!     drop(worker);
 //!     println!("Waiting for worker to stop…");
 //!
 //!     worker_thread.unwrap().join().unwrap();
@@ -97,6 +97,7 @@ pub struct Worker<T: Send>(Sender<Option<T>>);
 
 impl<T: Send> Worker<T> {
     /// Start up a worker (similar to the actor concept).
+    #[inline]
     pub fn new(cb: impl FnOnce(Tasker<T>)) -> Self {
         let (sender, receiver) = Channel::pair();
 
@@ -108,18 +109,16 @@ impl<T: Send> Worker<T> {
     }
 
     /// Send an command to the worker.
+    #[inline]
     pub fn send(&self, cmd: T) {
         self.0.send_and_reuse(Some(cmd));
-    }
-
-    /// Stop the worker
-    pub fn stop(self) {
-        self.0.send_and_reuse(None);
     }
 }
 
 impl<T: Send> Drop for Worker<T> {
+    #[inline]
     fn drop(&mut self) {
+        self.0.send_and_reuse(None);
         self.0.unuse();
     }
 }
@@ -130,12 +129,14 @@ pub struct Tasker<T: Send>(Receiver<Option<T>>);
 
 impl<T: Send> Tasker<T> {
     /// Get the next command from the tasker, returns [`None`] on stop
+    #[inline]
     pub async fn recv_next(&self) -> Option<T> {
         self.0.recv_and_reuse().await
     }
 }
 
 impl<T: Send> Drop for Tasker<T> {
+    #[inline]
     fn drop(&mut self) {
         self.0.unuse();
     }
