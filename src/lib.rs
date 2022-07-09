@@ -22,7 +22,7 @@
 //!             Cmd::Add(a, b, s) => s.send(a + b),
 //!         }
 //!     }
-//! 
+//!
 //!     println!("Worker stopping…");
 //! }
 //!
@@ -36,7 +36,7 @@
 //!                 .spawn(Box::pin(async move { worker(tasker).await }))
 //!         }));
 //!     });
-//! 
+//!
 //!     // Do an addition
 //!     println!("Sending command…");
 //!     let (send, recv) = Channel::pair();
@@ -44,12 +44,12 @@
 //!     println!("Receiving response…");
 //!     let response = recv.recv().await;
 //!     assert_eq!(response, 443);
-//! 
+//!
 //!     // Tell worker to stop
 //!     println!("Telling worker to stop…");
 //!     worker.stop();
 //!     println!("Waiting for worker to stop…");
-//! 
+//!
 //!     worker_thread.unwrap().join().unwrap();
 //!     println!("Worker thread joined");
 //! }

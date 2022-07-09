@@ -3,7 +3,10 @@ use core::{
     future::Future,
     marker::PhantomData,
     pin::Pin,
-    sync::atomic::{AtomicBool, AtomicPtr, Ordering},
+    sync::atomic::{
+        AtomicBool, AtomicPtr,
+        Ordering::{AcqRel, Acquire, Relaxed, Release},
+    },
     task::{
         Context, Poll,
         Poll::{Pending, Ready},
@@ -23,7 +26,7 @@ impl<T: Send> Sender<T> {
     /// Force dropping
     #[inline]
     pub(crate) fn unuse(&self) {
-        unsafe { (*self.0).msg.store(core::ptr::null_mut(), Ordering::Release) }
+        unsafe { (*self.0).msg.store(core::ptr::null_mut(), Release) }
     }
 
     /// Send a message
@@ -39,12 +42,7 @@ impl<T: Send> Sender<T> {
             // Spin lock until Waker is updated
             while (*self.0)
                 .lock
-                .compare_exchange_weak(
-                    false,
-                    true,
-                    Ordering::AcqRel,
-                    Ordering::Relaxed,
-                )
+                .compare_exchange_weak(false, true, AcqRel, Relaxed)
                 .is_err()
             {
                 core::hint::spin_loop();
@@ -59,12 +57,7 @@ impl<T: Send> Sender<T> {
             // Once awoken, spin lock until message is sent successfully
             while (*self.0)
                 .lock
-                .compare_exchange_weak(
-                    false,
-                    true,
-                    Ordering::AcqRel,
-                    Ordering::Relaxed,
-                )
+                .compare_exchange_weak(false, true, AcqRel, Relaxed)
                 .is_err()
             {
                 core::hint::spin_loop();
@@ -92,7 +85,7 @@ impl<T: Send> Receiver<T> {
     pub(crate) fn unuse(&self) {
         unsafe {
             // spin
-            while !(*self.0).msg.load(Ordering::Acquire).is_null() {
+            while !(*self.0).msg.load(Acquire).is_null() {
                 core::hint::spin_loop();
             }
             // drop
@@ -124,19 +117,14 @@ impl<T: Send> Future for Receiver<T> {
         cx: &mut Context<'_>,
     ) -> Poll<Self::Output> {
         unsafe {
-            if (*self.0).lock.fetch_or(true, Ordering::Acquire) {
+            if (*self.0).lock.fetch_or(true, Acquire) {
                 let message: T =
                     core::ptr::read((*(*self.0).msg.get_mut()).cast());
-                (*self.0).lock.store(false, Ordering::Release);
+                (*self.0).lock.store(false, Release);
                 // spinlock to allow box to be dropped
                 while (*self.0)
                     .lock
-                    .compare_exchange_weak(
-                        true,
-                        false,
-                        Ordering::AcqRel,
-                        Ordering::Relaxed,
-                    )
+                    .compare_exchange_weak(true, false, AcqRel, Relaxed)
                     .is_err()
                 {
                     core::hint::spin_loop();
@@ -144,7 +132,7 @@ impl<T: Send> Future for Receiver<T> {
                 Ready((message, Box::from_raw(self.0)))
             } else {
                 (*self.0).waker = cx.waker().clone();
-                (*self.0).lock.store(false, Ordering::Release);
+                (*self.0).lock.store(false, Release);
                 Pending
             }
         }
