@@ -56,7 +56,6 @@ impl<T: Send> Sender<T> {
     #[inline]
     pub fn send(self, message: T) {
         self.send_and_reuse(message);
-        // mem::forget(self);
     }
 }
 
