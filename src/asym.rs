@@ -157,19 +157,18 @@ impl Channel {
     }
 }
 
-#[inline]
-const unsafe fn do_nothing(_: *const ()) {}
-
-#[inline]
-const unsafe fn get_coma(ptr: *const ()) -> RawWaker {
-    RawWaker::new(ptr, &COMA)
-}
-
-const COMA: RawWakerVTable =
-    RawWakerVTable::new(get_coma, do_nothing, do_nothing, do_nothing);
-
 /// Create a waker that doesn't do anything (purposefully)
 #[inline]
 fn coma() -> Waker {
-    unsafe { Waker::from_raw(get_coma(core::ptr::null())) }
+    #[inline]
+    const unsafe fn dont(_: *const ()) {}
+
+    #[inline]
+    const unsafe fn coma(ptr: *const ()) -> RawWaker {
+        RawWaker::new(ptr, &COMA)
+    }
+
+    const COMA: RawWakerVTable = RawWakerVTable::new(coma, dont, dont, dont);
+
+    unsafe { Waker::from_raw(coma(core::ptr::null())) }
 }

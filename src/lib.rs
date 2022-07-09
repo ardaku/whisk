@@ -102,7 +102,7 @@ impl<T: Send> Worker<T> {
         let (sender, receiver) = Channel::pair();
 
         // Launch worker
-        cb(Tasker(Some(receiver)));
+        cb(Tasker(core::cell::Cell::new(Some(receiver))));
 
         // Return worker handle
         Self(sender)
@@ -123,27 +123,39 @@ impl<T: Send> Drop for Worker<T> {
 }
 
 /// Handle to a tasker - command producer (spsc-rendezvous channel)
-#[derive(Debug)]
-pub struct Tasker<T: Send>(Option<Receiver<Option<T>>>);
+pub struct Tasker<T: Send>(core::cell::Cell<Option<Receiver<Option<T>>>>);
+
+impl<T: Send + core::fmt::Debug> core::fmt::Debug for Tasker<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let tmp = self.0.take();
+        f.debug_struct("Foo")
+           .field("0", &tmp)
+           .finish()?;
+        self.0.set(tmp);
+        Ok(())
+    }
+}
 
 impl<T: Send> Tasker<T> {
     /// Get the next command from the tasker, returns [`None`] on stop
     #[inline]
-    pub async fn recv_next(&mut self) -> Option<T> {
-        let recver = self.0.as_ref()?;
-        let value = recver.recv_and_reuse().await;
-        if value.is_none() {
+    pub async fn recv_next(&self) -> Option<T> {
+        let recver = self.0.replace(None)?;
+
+        if let Some(value) = recver.recv_and_reuse().await {
+            self.0.set(Some(recver));
+            Some(value)
+        } else {
             unsafe { recver.unuse() };
-            self.0 = None;
+            None
         }
-        value
     }
 }
 
 impl<T: Send> Drop for Tasker<T> {
     #[inline]
     fn drop(&mut self) {
-        if self.0.is_some() {
+        if self.0.take().is_some() {
             panic!("Tasker dropped before Worker");
         }
     }
