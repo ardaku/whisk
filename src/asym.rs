@@ -2,11 +2,12 @@ use alloc::boxed::Box;
 use core::{
     future::Future,
     marker::PhantomData,
+    mem::MaybeUninit,
     pin::Pin,
-    ptr::NonNull,
+    ptr::{self, NonNull},
     sync::atomic::{
-        AtomicBool, AtomicPtr,
-        Ordering::{AcqRel, Acquire, Relaxed, Release},
+        AtomicPtr,
+        Ordering::{Acquire, Release},
     },
     task::{
         Context, Poll,
@@ -26,32 +27,27 @@ unsafe impl<T: Send> Send for Sender<T> {}
 impl<T: Send> Sender<T> {
     /// Send a message
     #[inline]
-    pub(crate) fn send_and_reuse(&self, message: T) {
-        // Inhibit drop because we're transferring data
-        let mut message = core::mem::ManuallyDrop::new(message);
+    pub(crate) fn send_and_reuse(&self, mut message: T) {
+        let ptr: *mut _ = &mut message;
 
         unsafe {
-            // Set address for reading
-            let addr: *mut _ = &mut *message;
-            (*self.0.as_ptr()).msg = AtomicPtr::from(addr.cast());
-            // Spin lock until Waker is updated
-            while (*self.0.as_ptr())
-                .lock
-                .compare_exchange_weak(false, true, AcqRel, Relaxed)
-                .is_err()
-            {
+            // Spin loop until receiver lock is released
+            let msg = loop {
+                let p = (*self.0.as_ptr()).msg.swap(ptr::null_mut(), Acquire);
+                if !p.is_null() {
+                    break p;
+                }
                 core::hint::spin_loop();
-            }
-            // Wake by reference
+            };
+
+            // Send data
+            *msg.cast() = message;
+
+            // Release lock (pointer unused)
+            (*self.0.as_ptr()).msg.store(ptr.cast(), Release);
+
+            // Wake Receiver
             (*self.0.as_ptr()).waker.wake_by_ref();
-            // Once awoken, spin lock until message is sent successfully
-            while (*self.0.as_ptr())
-                .lock
-                .compare_exchange_weak(false, true, AcqRel, Relaxed)
-                .is_err()
-            {
-                core::hint::spin_loop();
-            }
         }
     }
 
@@ -79,7 +75,7 @@ impl<T: Send> Receiver<T> {
     #[inline]
     pub(crate) async fn recv_and_reuse(&self) -> T {
         let clone = Receiver(self.0, PhantomData);
-        let (val, chan) = clone.await;
+        let (val, chan) = clone.recv_chan().await;
         core::mem::forget(chan);
         val
     }
@@ -87,34 +83,53 @@ impl<T: Send> Receiver<T> {
     /// Consume the receiver and receive the message
     #[inline]
     pub async fn recv(self) -> T {
-        self.await.0
+        self.recv_chan().await.0
+    }
+
+    /// Consume the receiver and receive the message, plus the channel.
+    #[inline]
+    pub async fn recv_chan(self) -> (T, Box<Channel>) {
+        let mut output = MaybeUninit::<T>::uninit();
+
+        let mut future = Fut(self.0, output.as_mut_ptr().cast());
+        // Release receiver lock
+        unsafe {
+            (*self.0.as_ptr()).msg.store(future.1, Release);
+        }
+        // Wait
+        let chan = (&mut future).await;
+        // Can safely assume init
+        unsafe { (output.assume_init(), chan) }
     }
 }
 
-impl<T: Send> Future for Receiver<T> {
-    type Output = (T, Box<Channel>);
+struct Fut(NonNull<Channel>, *mut ());
+
+impl Future for &mut Fut {
+    type Output = Box<Channel>;
 
     #[inline]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         unsafe {
-            if (*self.0.as_ptr()).lock.fetch_or(true, Acquire) {
-                let message: T =
-                    core::ptr::read((*(*self.0.as_ptr()).msg.get_mut()).cast());
-                (*self.0.as_ptr()).lock.store(false, Release);
-                // FIXME: Move to drop of Channel by adding InnerChannel
-                // spinlock to allow box to be dropped
-                while (*self.0.as_ptr())
-                    .lock
-                    .compare_exchange_weak(true, false, AcqRel, Relaxed)
-                    .is_err()
-                {
-                    core::hint::spin_loop();
+            // If already locked by sender, spinlock until send complete.
+            let addr = loop {
+                let p = (*self.0.as_ptr()).msg.swap(ptr::null_mut(), Acquire);
+                if !p.is_null() {
+                    break p;
                 }
-                Ready((message, Box::from_raw(self.0.as_ptr())))
-            } else {
+            };
+
+            if addr == self.1 {
+                // Write has not completed, update waker
                 (*self.0.as_ptr()).waker = cx.waker().clone();
-                (*self.0.as_ptr()).lock.store(false, Release);
+
+                // Release spinlock
+                (*self.0.as_ptr()).msg.store(addr, Release);
+
                 Pending
+            } else {
+                // Write is complete, can safely assume init
+                Ready(Box::from_raw(self.0.as_ptr()))
             }
         }
     }
@@ -123,7 +138,6 @@ impl<T: Send> Future for Receiver<T> {
 /// Channel context
 #[derive(Debug)]
 pub struct Channel {
-    lock: AtomicBool,
     waker: Waker,
     msg: AtomicPtr<()>,
 }
@@ -134,13 +148,10 @@ impl Channel {
     /// Create an asynchronous oneshot-rendezvous channel
     #[inline]
     pub fn pair<T: Send>() -> (Sender<T>, Receiver<T>) {
-        let mut channel = Self {
-            lock: false.into(),
+        let channel = Self {
             waker: coma(),
-            msg: core::ptr::null_mut::<()>().into(),
+            msg: ptr::null_mut::<()>().into(),
         };
-        // Non-null unused junk pointer
-        channel.msg = core::ptr::addr_of_mut!(channel).cast::<()>().into();
         let channel = Box::leak(Box::new(channel)).into();
 
         (Sender(channel, PhantomData), Receiver(channel, PhantomData))
@@ -170,5 +181,5 @@ fn coma() -> Waker {
 
     const COMA: RawWakerVTable = RawWakerVTable::new(coma, dont, dont, dont);
 
-    unsafe { Waker::from_raw(coma(core::ptr::null())) }
+    unsafe { Waker::from_raw(coma(ptr::null())) }
 }

@@ -128,9 +128,7 @@ pub struct Tasker<T: Send>(core::cell::Cell<Option<Receiver<Option<T>>>>);
 impl<T: Send + core::fmt::Debug> core::fmt::Debug for Tasker<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let tmp = self.0.take();
-        f.debug_struct("Foo")
-           .field("0", &tmp)
-           .finish()?;
+        f.debug_struct("Foo").field("0", &tmp).finish()?;
         self.0.set(tmp);
         Ok(())
     }
