@@ -2,7 +2,7 @@ use alloc::boxed::Box;
 use core::{
     future::Future,
     marker::PhantomData,
-    mem::MaybeUninit,
+    mem::{self, MaybeUninit},
     pin::Pin,
     ptr::{self, NonNull},
     sync::atomic::{
@@ -20,6 +20,7 @@ use core::{
 ///
 /// Created from a [`Channel`] context.
 #[derive(Debug)]
+#[must_use = "Sender should send a message before being dropped"]
 pub struct Sender<T: Send>(NonNull<Channel>, PhantomData<*mut T>);
 
 unsafe impl<T: Send> Send for Sender<T> {}
@@ -54,7 +55,8 @@ impl<T: Send> Sender<T> {
     /// Send a message
     #[inline]
     pub fn send(self, message: T) {
-        self.send_and_reuse(message)
+        self.send_and_reuse(message);
+        // mem::forget(self);
     }
 }
 
@@ -62,14 +64,16 @@ impl<T: Send> Sender<T> {
 ///
 /// Created from a [`Channel`] context.
 #[derive(Debug)]
+#[must_use = "Receiver must receive a message before being dropped"]
 pub struct Receiver<T: Send>(NonNull<Channel>, PhantomData<*mut T>);
 
 unsafe impl<T: Send> Send for Receiver<T> {}
 
 impl<T: Send> Receiver<T> {
     #[inline]
-    pub(crate) unsafe fn unuse(&self) {
+    pub(crate) unsafe fn unuse(self) {
         Box::from_raw(self.0.as_ptr());
+        mem::forget(self);
     }
 
     #[inline]
@@ -98,8 +102,16 @@ impl<T: Send> Receiver<T> {
         }
         // Wait
         let chan = (&mut future).await;
+        // Forget
+        mem::forget(self);
         // Can safely assume init
         unsafe { (output.assume_init(), chan) }
+    }
+}
+
+impl<T: Send> Drop for Receiver<T> {
+    fn drop(&mut self) {
+        panic!("Receiver dropped without receiving");
     }
 }
 
