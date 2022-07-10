@@ -28,8 +28,7 @@ async fn tasker() {
     let (send, recv) = Channel::pair();
     worker.send(Cmd::Add(43, 400, send)).await;
     let (mut _resp, mut chan) = recv.recv_chan().await;
-    for i in 1..256 {
-        println!("{i}");
+    for _ in 1..256 {
         let (send, recv) = chan.to_pair();
         worker.send(Cmd::Add(43, 400, send)).await;
         (_resp, chan) = recv.recv_chan().await;

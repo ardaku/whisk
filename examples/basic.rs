@@ -36,7 +36,7 @@ async fn tasker() {
     assert_eq!(response, 443);
 
     // Tell worker to stop
-    println!("Dropping worker…");
+    println!("Stopping worker…");
     worker.stop().await;
     println!("Waiting for worker to stop…");
 

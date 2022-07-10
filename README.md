@@ -8,7 +8,9 @@
 [![Crates.io](https://img.shields.io/crates/l/whisk)](https://github.com/AldaronLau/whisk/search?l=Text&q=license)
 [![Docs.rs](https://docs.rs/whisk/badge.svg)](https://docs.rs/whisk/)
 
-A simple and fast two-way async channel.
+#### Simple and fast async channels
+Whisk provides oneshot-rendezvous and spsc channels that can be used to
+implement futures, streams, notifiers, and actors.
 
 ## MSRV
 Whisk targets Rust 1.59.0 and later.

@@ -1,6 +1,6 @@
-//! A simple and fast two-way async channel.
-//!
-//! The idea is based on a concept of calling a function on a different task.
+//! #### Simple and fast async channels
+//! Whisk provides oneshot-rendezvous and spsc channels that can be used to
+//! implement futures, streams, notifiers, and actors.
 //!
 //! # Optional Features
 //! The `std` feature is enabled by default, disable it to use on **no_std**.
@@ -46,7 +46,7 @@
 //!     assert_eq!(response, 443);
 //!
 //!     // Tell worker to stop
-//!     println!("Dropping worker…");
+//!     println!("Stopping worker…");
 //!     worker.stop().await;
 //!     println!("Waiting for worker to stop…");
 //!

@@ -10,9 +10,9 @@
 
 [package]
 name = "whisk"
-version = "0.2.1"
+version = "0.3.0"
 license = "Apache-2.0 OR MIT OR BSL-1.0"
-description = "A simple and fast two-way async channel"
+description = "Simple and fast async channels"
 repository = "https://github.com/AldaronLau/whisk"
 documentation = "https://docs.rs/whisk"
 homepage = "https://github.com/AldaronLau/whisk/blob/stable/CHANGELOG.md"
@@ -24,17 +24,17 @@ categories = [
     "hardware-support",
     "no-std",
 ]
-keywords = ["channel", "message", "spsc", "thread", "send"]
+keywords = ["channel", "actor", "spsc", "oneshot", "rendezvous"]
 readme = "README.md"
 edition = "2021"
 
 [dev-dependencies]
 pasts = "0.11"
 dl_api = "0.4"
-criterion = { version = "0.3", features = ["async_futures"] }
 futures = "0.3"
 flume = "0.10"
 ntest = "0.8"
+nanorand = "0.7"
 
 [features]
 default = ["std"]
