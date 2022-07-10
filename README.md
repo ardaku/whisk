@@ -1,11 +1,11 @@
 # Whisk
-[![tests](https://github.com/AldaronLau/whisk/actions/workflows/ci.yml/badge.svg)](https://github.com/AldaronLau/whisk/actions/workflows/ci.yml)
-[![GitHub commit activity](https://img.shields.io/github/commit-activity/y/AldaronLau/whisk)](https://github.com/AldaronLau/whisk/)
-[![GitHub contributors](https://img.shields.io/github/contributors/AldaronLau/whisk)](https://github.com/AldaronLau/whisk/graphs/contributors)  
+[![tests](https://github.com/ardaku/whisk/actions/workflows/ci.yml/badge.svg)](https://github.com/ardaku/whisk/actions/workflows/ci.yml)
+[![GitHub commit activity](https://img.shields.io/github/commit-activity/y/ardaku/whisk)](https://github.com/ardaku/whisk/)
+[![GitHub contributors](https://img.shields.io/github/contributors/ardaku/whisk)](https://github.com/ardaku/whisk/graphs/contributors)  
 [![Crates.io](https://img.shields.io/crates/v/whisk)](https://crates.io/crates/whisk)
 [![Crates.io](https://img.shields.io/crates/d/whisk)](https://crates.io/crates/whisk)
 [![Crates.io (recent)](https://img.shields.io/crates/dr/whisk)](https://crates.io/crates/whisk)  
-[![Crates.io](https://img.shields.io/crates/l/whisk)](https://github.com/AldaronLau/whisk/search?l=Text&q=license)
+[![Crates.io](https://img.shields.io/crates/l/whisk)](https://github.com/ardaku/whisk/search?l=Text&q=license)
 [![Docs.rs](https://docs.rs/whisk/badge.svg)](https://docs.rs/whisk/)
 
 #### Simple and fast async channels
