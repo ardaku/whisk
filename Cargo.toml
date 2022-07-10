@@ -16,7 +16,7 @@ description = "Simple and fast async channels"
 repository = "https://github.com/AldaronLau/whisk"
 documentation = "https://docs.rs/whisk"
 homepage = "https://github.com/AldaronLau/whisk/blob/stable/CHANGELOG.md"
-include = ["Cargo.toml", "README.md", "src/*", "benches/addition.rs"]
+include = ["README.md", "src/*"]
 categories = [
     "asynchronous",
     "concurrency",
@@ -27,6 +27,7 @@ categories = [
 keywords = ["channel", "actor", "spsc", "oneshot", "rendezvous"]
 readme = "README.md"
 edition = "2021"
+rust-version = "1.59"
 
 [dev-dependencies]
 pasts = "0.11"
@@ -34,12 +35,8 @@ dl_api = "0.4"
 futures = "0.3"
 flume = "0.10"
 ntest = "0.8"
-nanorand = "0.7"
+libm = "0.2"
 
 [features]
 default = ["std"]
 std = []
-
-[[bench]]
-name = "addition"
-harness = false

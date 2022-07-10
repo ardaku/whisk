@@ -16,14 +16,12 @@ implement futures, streams, notifiers, and actors.
 Whisk targets Rust 1.59.0 and later.
 
 ## Benchmarks
-Benchmarks for v0.2.0:
+Benchmarks for v0.3.0 spsc on pasts runtime (compared to dynamic library):
 
 ```
-function/call           [1.5749 ns 1.5818 ns 1.5887 ns]
-extern/call             [1.5249 ns 1.5355 ns 1.5452 ns]
-ffi/call                [2.9104 ns 3.3309 ns 3.8884 ns]
-whisk/call              [213.22 ns 214.15 ns 215.03 ns]
-flume/call              [512.15 ns 537.62 ns 572.21 ns]
-whisk/threads           [10.455 us 12.039 us 14.052 us]
-flume/threads           [13.157 us 15.460 us 18.298 us]
+Dynamic library: 6ns
+Whisk (2-thread): 7.613µs
+Flume (2-thread): 7.777µs
+Whisk (1-thread): 207ns
+Flume (1-thread): 298ns
 ```
