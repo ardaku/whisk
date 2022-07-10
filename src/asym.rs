@@ -28,7 +28,7 @@ unsafe impl<T: Send> Send for Sender<T> {}
 impl<T: Send> Sender<T> {
     /// Send a message
     #[inline]
-    pub(crate) fn send_and_reuse(&self, mut message: T) {
+    pub(crate) async fn send_and_reuse(&self, mut message: T) {
         let ptr: *mut _ = &mut message;
 
         unsafe {
@@ -57,8 +57,8 @@ impl<T: Send> Sender<T> {
 
     /// Send a message
     #[inline]
-    pub fn send(self, message: T) {
-        self.send_and_reuse(message);
+    pub async fn send(self, message: T) {
+        self.send_and_reuse(message).await;
     }
 }
 

@@ -9,7 +9,7 @@ async fn worker(tasker: Tasker<Cmd>) {
     while let Some(command) = tasker.recv_next().await {
         println!("Worker receiving command");
         match command {
-            Cmd::Add(a, b, s) => s.send(a + b),
+            Cmd::Add(a, b, s) => s.send(a + b).await,
         }
     }
 
@@ -30,14 +30,14 @@ async fn tasker() {
     // Do an addition
     println!("Sending command…");
     let (send, recv) = Channel::pair();
-    worker.send(Cmd::Add(43, 400, send));
+    worker.send(Cmd::Add(43, 400, send)).await;
     println!("Receiving response…");
     let response = recv.recv().await;
     assert_eq!(response, 443);
 
     // Tell worker to stop
     println!("Dropping worker…");
-    drop(worker);
+    worker.stop().await;
     println!("Waiting for worker to stop…");
 
     worker_thread.unwrap().join().unwrap();

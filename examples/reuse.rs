@@ -7,13 +7,10 @@ enum Cmd {
 
 async fn worker(tasker: Tasker<Cmd>) {
     while let Some(command) = tasker.recv_next().await {
-        println!("Worker receiving command");
         match command {
-            Cmd::Add(a, b, s) => s.send(a + b),
+            Cmd::Add(a, b, s) => s.send(a + b).await,
         }
     }
-
-    println!("Worker stopping…");
 }
 
 async fn tasker() {
@@ -28,18 +25,19 @@ async fn tasker() {
     });
 
     // Do an addition
-    for i in 0..256 {
-        println!("Sending command…");
-        let (send, recv) = Channel::pair();
-        worker.send(Cmd::Add(43, 400, send));
-        println!("Receiving response…");
-        let response = recv.recv().await;
-        assert_eq!(response, 443);
+    let (send, recv) = Channel::pair();
+    worker.send(Cmd::Add(43, 400, send)).await;
+    let (mut _resp, mut chan) = recv.recv_chan().await;
+    for i in 1..256 {
+        println!("{i}");
+        let (send, recv) = chan.to_pair();
+        worker.send(Cmd::Add(43, 400, send)).await;
+        (_resp, chan) = recv.recv_chan().await;
     }
-    
+
     // Tell worker to stop
     println!("Dropping worker…");
-    drop(worker);
+    worker.stop().await;
     println!("Waiting for worker to stop…");
 
     worker_thread.unwrap().join().unwrap();

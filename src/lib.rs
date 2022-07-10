@@ -19,7 +19,7 @@
 //!     while let Some(command) = tasker.recv_next().await {
 //!         println!("Worker receiving command");
 //!         match command {
-//!             Cmd::Add(a, b, s) => s.send(a + b),
+//!             Cmd::Add(a, b, s) => s.send(a + b).await,
 //!         }
 //!     }
 //!
@@ -40,14 +40,14 @@
 //!     // Do an addition
 //!     println!("Sending command…");
 //!     let (send, recv) = Channel::pair();
-//!     worker.send(Cmd::Add(43, 400, send));
+//!     worker.send(Cmd::Add(43, 400, send)).await;
 //!     println!("Receiving response…");
 //!     let response = recv.recv().await;
 //!     assert_eq!(response, 443);
 //!
 //!     // Tell worker to stop
 //!     println!("Dropping worker…");
-//!     drop(worker);
+//!     worker.stop().await;
 //!     println!("Waiting for worker to stop…");
 //!
 //!     worker_thread.unwrap().join().unwrap();
@@ -110,15 +110,22 @@ impl<T: Send> Worker<T> {
 
     /// Send an command to the worker.
     #[inline]
-    pub fn send(&self, cmd: T) {
-        self.0.send_and_reuse(Some(cmd));
+    pub async fn send(&self, cmd: T) {
+        self.0.send_and_reuse(Some(cmd)).await;
+    }
+
+    /// Stop the worker.
+    #[inline]
+    pub async fn stop(self) {
+        self.0.send_and_reuse(None).await;
+        core::mem::forget(self);
     }
 }
 
 impl<T: Send> Drop for Worker<T> {
     #[inline]
     fn drop(&mut self) {
-        self.0.send_and_reuse(None);
+        panic!("Worker dropped without stopping");
     }
 }
 
