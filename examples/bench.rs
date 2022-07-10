@@ -1,8 +1,8 @@
-use whisk::{Channel, Sender, Tasker, Worker};
-use std::time::Instant;
-use pasts::prelude::*;
+use std::{ffi::CStr, time::Instant};
+
 use dl_api::manual::DlApi;
-use std::ffi::CStr;
+use pasts::prelude::*;
+use whisk::{Channel, Sender, Tasker, Worker};
 
 enum Cmd {
     /// Tell messenger to get cosine
@@ -44,12 +44,12 @@ async fn tasker_multi() {
         (_resp, chan) = recv.recv_chan().await;
     }
     let now = Instant::now();
-    for _ in 1..=1024*256 {
+    for _ in 1..=1024 * 256 {
         let (send, recv) = chan.to_pair();
         worker.send(Cmd::Cos(750.0, send)).await;
         (_resp, chan) = recv.recv_chan().await;
     }
-    let elapsed = now.elapsed() / (1024*256);
+    let elapsed = now.elapsed() / (1024 * 256);
     println!("Whisk (2-thread): {:?}", elapsed);
 
     // Tell worker to stop
@@ -76,12 +76,12 @@ async fn tasker_single(executor: &Executor) {
         (_resp, chan) = recv.recv_chan().await;
     }
     let now = Instant::now();
-    for _ in 1..=1024*256 {
+    for _ in 1..=1024 * 256 {
         let (send, recv) = chan.to_pair();
         worker.send(Cmd::Cos(750.0, send)).await;
         (_resp, chan) = recv.recv_chan().await;
     }
-    let elapsed = now.elapsed() / (1024*256);
+    let elapsed = now.elapsed() / (1024 * 256);
     println!("Whisk (1-thread): {:?}", elapsed);
 
     // Tell worker to stop
@@ -106,12 +106,12 @@ async fn flume_multi() {
         (_resp, chan) = recv.recv_chan().await;
     }
     let now = Instant::now();
-    for _ in 1..=1024*256 {
+    for _ in 1..=1024 * 256 {
         let (send, recv) = chan.to_pair();
         worker.send_async(Cmd::Cos(750.0, send)).await.unwrap();
         (_resp, chan) = recv.recv_chan().await;
     }
-    let elapsed = now.elapsed() / (1024*256);
+    let elapsed = now.elapsed() / (1024 * 256);
     println!("Flume (2-thread): {:?}", elapsed);
 
     // Tell worker to stop
@@ -137,12 +137,12 @@ async fn flume_single(executor: &Executor) {
         (_resp, chan) = recv.recv_chan().await;
     }
     let now = Instant::now();
-    for _ in 1..=1024*256 {
+    for _ in 1..=1024 * 256 {
         let (send, recv) = chan.to_pair();
         worker.send_async(Cmd::Cos(750.0, send)).await.unwrap();
         (_resp, chan) = recv.recv_chan().await;
     }
-    let elapsed = now.elapsed() / (1024*256);
+    let elapsed = now.elapsed() / (1024 * 256);
     println!("Flume (1-thread): {:?}", elapsed);
 
     // Tell worker to stop
@@ -167,12 +167,12 @@ async fn dyn_lib() {
         }
     }
     let now = Instant::now();
-    for _ in 1..=1024*256 {
+    for _ in 1..=1024 * 256 {
         unsafe {
             core::convert::identity(cosf(750.0));
         }
     }
-    let elapsed = now.elapsed() / (1024*256);
+    let elapsed = now.elapsed() / (1024 * 256);
     println!("Dynamic library: {:?}", elapsed);
 }
 
