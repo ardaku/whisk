@@ -44,11 +44,14 @@ impl<T: Send> Sender<T> {
             // Send data
             *msg.cast() = message;
 
+            // Read waker before allowing to be free'd
+            let waker = (*self.0.as_ptr()).waker.clone();
+
             // Release lock (pointer unused)
             (*self.0.as_ptr()).msg.store(ptr.cast(), Release);
 
             // Wake Receiver
-            (*self.0.as_ptr()).waker.wake_by_ref();
+            waker.wake();
         }
     }
 
