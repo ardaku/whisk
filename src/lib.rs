@@ -128,13 +128,15 @@ impl<T: Send> Sender<T> {
             *msg.cast() = message;
 
             // Read waker before allowing to be free'd
-            let waker = (*self.0.as_ptr()).waker.clone();
+            let waker = (*self.0.as_ptr()).waker.take();
 
             // Release lock (pointer unused)
             (*self.0.as_ptr()).msg.store(ptr.cast(), Release);
 
             // Wake Receiver
-            waker.wake();
+            if let Some(waker) = waker {
+                waker.wake();
+            }
         }
     }
 
@@ -251,7 +253,7 @@ impl Future for &mut Fut {
 
             if addr == self.1 {
                 // Write has not completed, update waker
-                (*self.0.as_ptr()).waker = cx.waker().clone();
+                (*self.0.as_ptr()).waker = Some(cx.waker().clone());
 
                 // Release spinlock
                 (*self.0.as_ptr()).msg.store(addr, Release);
@@ -279,7 +281,7 @@ impl Future for &mut Fut {
 /// Channel context
 #[derive(Debug)]
 pub struct Channel {
-    waker: Waker,
+    waker: Option<Waker>,
     other: Waker,
     msg: AtomicPtr<()>,
     lock: AtomicBool,
@@ -292,7 +294,7 @@ impl Channel {
     #[inline]
     pub fn pair<T: Send>() -> (Sender<T>, Receiver<T>) {
         let channel = Self {
-            waker: coma(),
+            waker: None,
             other: coma(),
             msg: ptr::null_mut::<()>().into(),
             lock: false.into(),

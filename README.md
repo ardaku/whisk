@@ -20,8 +20,8 @@ Benchmarks for v0.3.0 spsc on pasts runtime (compared to dynamic library):
 
 ```
 Dynamic library: 6ns
-Whisk (2-thread): 7.613µs
-Flume (2-thread): 7.777µs
-Whisk (1-thread): 207ns
-Flume (1-thread): 298ns
+Whisk (2-thread): 7.363µs
+Flume (2-thread): 7.382µs
+Whisk (1-thread): 180ns
+Flume (1-thread): 285ns
 ```
