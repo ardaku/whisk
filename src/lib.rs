@@ -152,6 +152,7 @@ struct Barrier(NonNull<Channel>);
 impl Future for Barrier {
     type Output = *mut ();
 
+    #[inline]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<*mut ()> {
         unsafe {
             // Lock other waker

@@ -4,6 +4,21 @@ All notable changes to `whisk` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://github.com/AldaronLau/semver).
 
+## [0.3.0] - 2022-07-10
+### Added
+ - `Channel` struct, and `Channel::to_pair()` for reusing oneshot channels
+ - `Sender` and `Receiver` oneshot-rendezvous channels
+ - `Worker::stop()` to close a spsc channel
+
+### Changed
+ - Replaced `channel()`, with `Channel::pair()`
+ - Renamed `Commander` to `Worker`, and `Messenger` to `Tasker`
+
+### Removed
+ - `Command`, `Message` types
+ - `Commander::start()` and `Messenger::start()`, use `Worker::send()` and
+   `Commander::recv_next()` instead
+
 ## [0.2.1] - 2022-04-19
 ### Changed
  - Small optimizations
