@@ -6,7 +6,7 @@ use core::{
     pin::Pin,
     ptr::{self, NonNull},
     sync::atomic::{
-        AtomicPtr,
+        AtomicBool, AtomicPtr,
         Ordering::{Acquire, Release},
     },
     task::{
@@ -32,14 +32,8 @@ impl<T: Send> Sender<T> {
         let ptr: *mut _ = &mut message;
 
         unsafe {
-            // Spin loop until receiver lock is released
-            let msg = loop {
-                let p = (*self.0.as_ptr()).msg.swap(ptr::null_mut(), Acquire);
-                if !p.is_null() {
-                    break p;
-                }
-                core::hint::spin_loop();
-            };
+            // Wait until receive requested
+            let msg = Barrier(self.0).await;
 
             // Send data
             *msg.cast() = message;
@@ -59,6 +53,38 @@ impl<T: Send> Sender<T> {
     #[inline]
     pub async fn send(self, message: T) {
         self.send_and_reuse(message).await;
+    }
+}
+
+struct Barrier(NonNull<Channel>);
+
+impl Future for Barrier {
+    type Output = *mut ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<*mut ()> {
+        unsafe {
+            // Lock other waker
+            while (*self.0.as_ptr()).lock.swap(true, Acquire) {
+                core::hint::spin_loop();
+            }
+
+            // Check ready status
+            let p = (*self.0.as_ptr()).msg.swap(ptr::null_mut(), Acquire);
+            if p.is_null() {
+                // Set other waker
+                (*self.0.as_ptr()).other = cx.waker().clone();
+
+                // Release lock on other waker
+                (*self.0.as_ptr()).lock.store(false, Release);
+
+                Pending
+            } else {
+                // Release lock on other waker
+                (*self.0.as_ptr()).lock.store(false, Release);
+
+                Ready(p)
+            }
+        }
     }
 }
 
@@ -131,6 +157,7 @@ impl Future for &mut Fut {
                 if !p.is_null() {
                     break p;
                 }
+                core::hint::spin_loop();
             };
 
             if addr == self.1 {
@@ -139,6 +166,17 @@ impl Future for &mut Fut {
 
                 // Release spinlock
                 (*self.0.as_ptr()).msg.store(addr, Release);
+
+                // Lock other waker
+                while (*self.0.as_ptr()).lock.swap(true, Acquire) {
+                    core::hint::spin_loop();
+                }
+
+                // Wake other waker
+                (*self.0.as_ptr()).other.wake_by_ref();
+
+                // Release lock on other waker
+                (*self.0.as_ptr()).lock.store(false, Release);
 
                 Pending
             } else {
@@ -153,7 +191,9 @@ impl Future for &mut Fut {
 #[derive(Debug)]
 pub struct Channel {
     waker: Waker,
+    other: Waker,
     msg: AtomicPtr<()>,
+    lock: AtomicBool,
 }
 
 unsafe impl Send for Channel {}
@@ -164,7 +204,9 @@ impl Channel {
     pub fn pair<T: Send>() -> (Sender<T>, Receiver<T>) {
         let channel = Self {
             waker: coma(),
+            other: coma(),
             msg: ptr::null_mut::<()>().into(),
+            lock: false.into(),
         };
         let channel = Box::leak(Box::new(channel)).into();
 
@@ -173,9 +215,7 @@ impl Channel {
 
     /// Reuse the context to avoid extra allocation
     #[inline]
-    pub fn to_pair<T: Send>(mut self: Box<Self>) -> (Sender<T>, Receiver<T>) {
-        self.waker = coma();
-
+    pub fn to_pair<T: Send>(self: Box<Self>) -> (Sender<T>, Receiver<T>) {
         let channel = Box::leak(self).into();
 
         (Sender(channel, PhantomData), Receiver(channel, PhantomData))
