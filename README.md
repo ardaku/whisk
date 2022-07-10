@@ -10,6 +10,9 @@
 
 A simple and fast two-way async channel.
 
+## MSRV
+Whisk targets Rust 1.59.0 and later.
+
 ## Benchmarks
 Benchmarks for v0.2.0:
 
