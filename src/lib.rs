@@ -122,7 +122,7 @@ impl<T: Send> Sender<T> {
 
         unsafe {
             let mut msg = ptr::null_mut();
-            for _ in 0..64 {
+            for _ in 0..8 {
                 msg = (*self.0.as_ptr()).msg.swap(ptr::null_mut(), Acquire);
                 if !msg.is_null() {
                     break;
