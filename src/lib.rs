@@ -347,7 +347,7 @@ impl<T: Send> Worker<T> {
         Self(sender)
     }
 
-    /// Send an command to the worker.
+    /// Send a command to the worker.
     #[inline]
     pub async fn send(&self, cmd: T) {
         self.0.send_and_reuse(Some(cmd)).await;
