@@ -221,13 +221,13 @@ impl<T: Send> Receiver<T> {
     pub async fn recv_chan(self) -> (T, Box<Channel>) {
         let mut output = MaybeUninit::<T>::uninit();
 
-        let mut future = Fut(self.0, output.as_mut_ptr().cast());
+        let future = Fut(self.0, output.as_mut_ptr().cast());
         // Release receiver lock
         unsafe {
             (*self.0.as_ptr()).msg.store(future.1, Release);
         }
         // Wait
-        let chan = (&mut future).await;
+        let chan = future.await;
         // Forget
         mem::forget(self);
         // Can safely assume init
@@ -244,7 +244,7 @@ impl<T: Send> Drop for Receiver<T> {
 
 struct Fut(NonNull<Channel>, *mut ());
 
-impl Future for &mut Fut {
+impl Future for Fut {
     type Output = Box<Channel>;
 
     #[inline]
