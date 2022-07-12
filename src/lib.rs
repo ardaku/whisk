@@ -147,6 +147,7 @@ impl<T: Send> Sender<T> {
     }
 }
 
+/// Barrier future to wait then send
 struct Barrier(NonNull<Channel>);
 
 impl Future for Barrier {
@@ -161,20 +162,21 @@ impl Future for Barrier {
             }
 
             // Check ready status
-            let p = (*self.0.as_ptr()).msg.swap(ptr::null_mut(), Acquire);
-            if p.is_null() {
-                // Set other waker
+            let ptr = (*self.0.as_ptr()).msg.swap(ptr::null_mut(), Acquire);
+            let pending = ptr.is_null();
+
+            // Set other waker
+            if pending {
                 (*self.0.as_ptr()).other = cx.waker().clone();
+            }
 
-                // Release lock on other waker
-                (*self.0.as_ptr()).lock.store(false, Release);
+            // Release lock on other waker
+            (*self.0.as_ptr()).lock.store(false, Release);
 
+            if pending {
                 Pending
             } else {
-                // Release lock on other waker
-                (*self.0.as_ptr()).lock.store(false, Release);
-
-                Ready(p)
+                Ready(ptr)
             }
         }
     }
@@ -230,6 +232,7 @@ impl<T: Send> Receiver<T> {
 }
 
 impl<T: Send> Drop for Receiver<T> {
+    #[inline]
     fn drop(&mut self) {
         panic!("Receiver dropped without receiving");
     }
