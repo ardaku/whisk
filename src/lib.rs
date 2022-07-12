@@ -101,7 +101,7 @@ use core::{
     task::{
         Context, Poll,
         Poll::{Pending, Ready},
-        RawWaker, RawWakerVTable, Waker,
+        Waker,
     },
 };
 
@@ -166,13 +166,17 @@ impl Future for Barrier {
             let pending = ptr.is_null();
 
             // Set other waker
-            if pending {
-                (*self.0.as_ptr()).other = cx.waker().clone();
-            }
+            // Branch should optimize away to mul or sl/sra/and
+            (*self.0.as_ptr()).other = if pending {
+                Some(cx.waker().clone())
+            } else {
+                None
+            };
 
             // Release lock on other waker
             (*self.0.as_ptr()).lock.store(false, Release);
 
+            // Branch should optimize away to mul or sl/sra/and
             if pending {
                 Pending
             } else {
@@ -268,7 +272,7 @@ impl Future for &mut Fut {
                 }
 
                 // Wake other waker
-                (*self.0.as_ptr()).other.wake_by_ref();
+                (*self.0.as_ptr()).other.take().map(|w| w.wake());
 
                 // Release lock on other waker
                 (*self.0.as_ptr()).lock.store(false, Release);
@@ -286,7 +290,7 @@ impl Future for &mut Fut {
 #[derive(Debug)]
 pub struct Channel {
     waker: Option<Waker>,
-    other: Waker,
+    other: Option<Waker>,
     msg: AtomicPtr<()>,
     lock: AtomicBool,
 }
@@ -299,7 +303,7 @@ impl Channel {
     pub fn pair<T: Send>() -> (Sender<T>, Receiver<T>) {
         let channel = Self {
             waker: None,
-            other: coma(),
+            other: None,
             msg: ptr::null_mut::<()>().into(),
             lock: false.into(),
         };
@@ -315,22 +319,6 @@ impl Channel {
 
         (Sender(channel, PhantomData), Receiver(channel, PhantomData))
     }
-}
-
-/// Create a waker that doesn't do anything (purposefully)
-#[inline]
-fn coma() -> Waker {
-    #[inline]
-    const unsafe fn dont(_: *const ()) {}
-
-    #[inline]
-    const unsafe fn coma(ptr: *const ()) -> RawWaker {
-        RawWaker::new(ptr, &COMA)
-    }
-
-    const COMA: RawWakerVTable = RawWakerVTable::new(coma, dont, dont, dont);
-
-    unsafe { Waker::from_raw(coma(ptr::null())) }
 }
 
 /// Handle to a worker - command consumer (spsc-rendezvous channel)
