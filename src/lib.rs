@@ -121,8 +121,19 @@ impl<T: Send> Sender<T> {
         let ptr: *mut _ = &mut message;
 
         unsafe {
+            let mut msg = ptr::null_mut();
+            for _ in 0..64 {
+                msg = (*self.0.as_ptr()).msg.swap(ptr::null_mut(), Acquire);
+                if !msg.is_null() {
+                    break;
+                }
+                core::hint::spin_loop();
+            }
+
             // Wait until receive requested
-            let msg = Barrier(self.0).await;
+            if msg.is_null() {
+                msg = Barrier(self.0).await;
+            }
 
             // Send data
             *msg.cast() = message;
