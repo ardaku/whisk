@@ -177,12 +177,8 @@ impl Future for Barrier {
             let pending = ptr.is_null();
 
             // Set other waker
-            // Branch should optimize away to mul or sl/sra/and
-            (*self.0.as_ptr()).other = if pending {
-                Some(cx.waker().clone())
-            } else {
-                None
-            };
+            let waker = cx.waker().clone();
+            (*self.0.as_ptr()).other = pending.then(move || waker);
 
             // Release lock on other waker
             (*self.0.as_ptr()).lock.store(false, Release);
@@ -283,7 +279,9 @@ impl Future for Fut {
                 }
 
                 // Wake other waker
-                (*self.0.as_ptr()).other.take().map(|w| w.wake());
+                if let Some(w) = (*self.0.as_ptr()).other.take() {
+                    w.wake()
+                }
 
                 // Release lock on other waker
                 (*self.0.as_ptr()).lock.store(false, Release);
