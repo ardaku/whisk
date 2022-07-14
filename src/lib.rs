@@ -91,7 +91,7 @@ use alloc::boxed::Box;
 use core::{
     future::Future,
     marker::PhantomData,
-    mem::{self, MaybeUninit},
+    mem::{self, MaybeUninit, ManuallyDrop},
     pin::Pin,
     ptr::{self, NonNull},
     sync::atomic::{
@@ -126,15 +126,15 @@ use seal::For;
 /// Created from a [`Channel`] context.
 #[derive(Debug)]
 #[must_use = "Sender should send a message before being dropped"]
-pub struct Sender<T: Send, U = For<T>> {
+pub struct Sender<T: Send + Unpin, U = For<T>> {
     channel: NonNull<Channel>,
-    _message: U,
+    message: ManuallyDrop<U>,
     _for: For<T>,
 }
 
-unsafe impl<T: Send> Send for Sender<T> {}
+unsafe impl<T: Send + Unpin> Send for Sender<T> {}
 
-impl<T: Send> Sender<T> {
+impl<T: Send + Unpin> Sender<T> {
     /// Send a message
     #[inline]
     pub(crate) async fn send_and_reuse(&self, mut message: T) {
@@ -153,11 +153,11 @@ impl<T: Send> Sender<T> {
 
             // Wait until receive requested
             if msg.is_null() {
-                msg = Barrier(self.channel).await;
+                Sender { channel: self.channel, message: ManuallyDrop::new(message), _for: For::new() }.await;
+            } else {
+                // Send data
+                *msg.cast() = message;
             }
-
-            // Send data
-            *msg.cast() = message;
 
             // Read waker before allowing to be free'd
             let waker = (*self.channel.as_ptr()).waker.take();
@@ -179,38 +179,44 @@ impl<T: Send> Sender<T> {
     }
 }
 
-/// Barrier future to wait then send
-struct Barrier(NonNull<Channel>);
-
-impl Future for Barrier {
-    type Output = *mut ();
-
+impl<T: Send + Unpin> Sender<T, T> {
     #[inline]
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<*mut ()> {
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let channel = self.channel.as_ptr();
+
         unsafe {
             // Lock other waker
-            while (*self.0.as_ptr()).lock.swap(true, Acquire) {
+            while (*channel).lock.swap(true, Acquire) {
                 core::hint::spin_loop();
             }
 
             // Check ready status
-            let ptr = (*self.0.as_ptr()).msg.swap(ptr::null_mut(), Acquire);
+            let ptr = (*channel).msg.swap(ptr::null_mut(), Acquire);
             let pending = ptr.is_null();
 
             // Set other waker
             let waker = cx.waker().clone();
-            (*self.0.as_ptr()).other = pending.then(move || waker);
+            (*channel).other = pending.then(move || waker);
 
             // Release lock on other waker
-            (*self.0.as_ptr()).lock.store(false, Release);
+            (*channel).lock.store(false, Release);
 
-            // Branch should optimize away to mul or sl/sra/and
             if pending {
-                Pending
-            } else {
-                Ready(ptr)
+                return Pending;
             }
+
+            *ptr.cast() = ManuallyDrop::take(&mut self.message);
+            Ready(())
         }
+    }
+}
+
+impl<T: Send + Unpin> Future for Sender<T, T> {
+    type Output = ();
+
+    #[inline]
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        self.poll_next(cx)
     }
 }
 
@@ -219,11 +225,11 @@ impl Future for Barrier {
 /// Created from a [`Channel`] context.
 #[derive(Debug)]
 #[must_use = "Receiver must receive a message before being dropped"]
-pub struct Receiver<T: Send>(NonNull<Channel>, PhantomData<*mut T>);
+pub struct Receiver<T: Send + Unpin>(NonNull<Channel>, PhantomData<*mut T>);
 
-unsafe impl<T: Send> Send for Receiver<T> {}
+unsafe impl<T: Send + Unpin> Send for Receiver<T> {}
 
-impl<T: Send> Receiver<T> {
+impl<T: Send + Unpin> Receiver<T> {
     #[inline]
     pub(crate) unsafe fn unuse(self) {
         Box::from_raw(self.0.as_ptr());
@@ -263,7 +269,7 @@ impl<T: Send> Receiver<T> {
     }
 }
 
-impl<T: Send> Drop for Receiver<T> {
+impl<T: Send + Unpin> Drop for Receiver<T> {
     #[inline]
     fn drop(&mut self) {
         panic!("Receiver dropped without receiving");
@@ -330,7 +336,7 @@ unsafe impl Send for Channel {}
 impl Channel {
     /// Create an asynchronous oneshot-rendezvous channel
     #[inline]
-    pub fn pair<T: Send>() -> (Sender<T>, Receiver<T>) {
+    pub fn pair<T: Send + Unpin>() -> (Sender<T>, Receiver<T>) {
         let channel = Self {
             waker: None,
             other: None,
@@ -342,7 +348,7 @@ impl Channel {
         (
             Sender {
                 channel,
-                _message: For::new(),
+                message: ManuallyDrop::new(For::new()),
                 _for: For::new(),
             },
             Receiver(channel, PhantomData),
@@ -351,13 +357,13 @@ impl Channel {
 
     /// Reuse the context to avoid extra allocation
     #[inline]
-    pub fn to_pair<T: Send>(self: Box<Self>) -> (Sender<T>, Receiver<T>) {
+    pub fn to_pair<T: Send + Unpin>(self: Box<Self>) -> (Sender<T>, Receiver<T>) {
         let channel = Box::leak(self).into();
 
         (
             Sender {
                 channel,
-                _message: For::new(),
+                message: ManuallyDrop::new(For::new()),
                 _for: For::new(),
             },
             Receiver(channel, PhantomData),
@@ -367,9 +373,9 @@ impl Channel {
 
 /// Handle to a worker - command consumer (spsc-rendezvous channel)
 #[derive(Debug)]
-pub struct Worker<T: Send>(Sender<Option<T>>);
+pub struct Worker<T: Send + Unpin>(Sender<Option<T>>);
 
-impl<T: Send> Worker<T> {
+impl<T: Send + Unpin> Worker<T> {
     /// Start up a worker (similar to the actor concept).
     #[inline]
     pub fn new(cb: impl FnOnce(Tasker<T>)) -> Self {
@@ -396,7 +402,7 @@ impl<T: Send> Worker<T> {
     }
 }
 
-impl<T: Send> Drop for Worker<T> {
+impl<T: Send + Unpin> Drop for Worker<T> {
     #[inline]
     fn drop(&mut self) {
         panic!("Worker dropped without stopping");
@@ -404,9 +410,9 @@ impl<T: Send> Drop for Worker<T> {
 }
 
 /// Handle to a tasker - command producer (spsc-rendezvous channel)
-pub struct Tasker<T: Send>(core::cell::Cell<Option<Receiver<Option<T>>>>);
+pub struct Tasker<T: Send + Unpin>(core::cell::Cell<Option<Receiver<Option<T>>>>);
 
-impl<T: Send + core::fmt::Debug> core::fmt::Debug for Tasker<T> {
+impl<T: Send + core::fmt::Debug + Unpin> core::fmt::Debug for Tasker<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let tmp = self.0.take();
         f.debug_struct("Foo").field("0", &tmp).finish()?;
@@ -415,7 +421,7 @@ impl<T: Send + core::fmt::Debug> core::fmt::Debug for Tasker<T> {
     }
 }
 
-impl<T: Send> Tasker<T> {
+impl<T: Send + Unpin> Tasker<T> {
     /// Get the next command from the tasker, returns [`None`] on stop
     #[inline]
     pub async fn recv_next(&self) -> Option<T> {
@@ -431,7 +437,7 @@ impl<T: Send> Tasker<T> {
     }
 }
 
-impl<T: Send> Drop for Tasker<T> {
+impl<T: Send + Unpin> Drop for Tasker<T> {
     #[inline]
     fn drop(&mut self) {
         if self.0.take().is_some() {
