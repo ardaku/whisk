@@ -105,12 +105,32 @@ use core::{
     },
 };
 
+mod seal {
+    use core::marker::PhantomData;
+
+    #[derive(Default, Debug)]
+    pub struct For<T>(PhantomData<*mut T>);
+
+    impl<T> For<T> {
+        #[inline]
+        pub(super) fn new() -> Self {
+            For(PhantomData)
+        }
+    }
+}
+
+use seal::For;
+
 /// Sends a single message (oneshot-rendezvous channel)
 ///
 /// Created from a [`Channel`] context.
 #[derive(Debug)]
 #[must_use = "Sender should send a message before being dropped"]
-pub struct Sender<T: Send>(NonNull<Channel>, PhantomData<*mut T>);
+pub struct Sender<T: Send, U = For<T>> {
+    channel: NonNull<Channel>,
+    _message: U,
+    _for: For<T>,
+}
 
 unsafe impl<T: Send> Send for Sender<T> {}
 
@@ -123,7 +143,8 @@ impl<T: Send> Sender<T> {
         unsafe {
             let mut msg = ptr::null_mut();
             for _ in 0..8 {
-                msg = (*self.0.as_ptr()).msg.swap(ptr::null_mut(), Acquire);
+                msg =
+                    (*self.channel.as_ptr()).msg.swap(ptr::null_mut(), Acquire);
                 if !msg.is_null() {
                     break;
                 }
@@ -132,17 +153,17 @@ impl<T: Send> Sender<T> {
 
             // Wait until receive requested
             if msg.is_null() {
-                msg = Barrier(self.0).await;
+                msg = Barrier(self.channel).await;
             }
 
             // Send data
             *msg.cast() = message;
 
             // Read waker before allowing to be free'd
-            let waker = (*self.0.as_ptr()).waker.take();
+            let waker = (*self.channel.as_ptr()).waker.take();
 
             // Release lock (pointer unused)
-            (*self.0.as_ptr()).msg.store(ptr.cast(), Release);
+            (*self.channel.as_ptr()).msg.store(ptr.cast(), Release);
 
             // Wake Receiver
             if let Some(waker) = waker {
@@ -318,7 +339,14 @@ impl Channel {
         };
         let channel = Box::leak(Box::new(channel)).into();
 
-        (Sender(channel, PhantomData), Receiver(channel, PhantomData))
+        (
+            Sender {
+                channel,
+                _message: For::new(),
+                _for: For::new(),
+            },
+            Receiver(channel, PhantomData),
+        )
     }
 
     /// Reuse the context to avoid extra allocation
@@ -326,7 +354,14 @@ impl Channel {
     pub fn to_pair<T: Send>(self: Box<Self>) -> (Sender<T>, Receiver<T>) {
         let channel = Box::leak(self).into();
 
-        (Sender(channel, PhantomData), Receiver(channel, PhantomData))
+        (
+            Sender {
+                channel,
+                _message: For::new(),
+                _for: For::new(),
+            },
+            Receiver(channel, PhantomData),
+        )
     }
 }
 
