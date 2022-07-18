@@ -87,7 +87,17 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
-use alloc::boxed::Box;
+// SpinLock implementation (used for transfer of wakers)
+mod spin;
+// Channel implementation
+mod chan;
+// Spsc implementation
+mod spsc;
+
+pub use chan::{Channel, Receiver, Receiving, Sender, Sending};
+pub use spsc::{Message, Tasker, Worker};
+
+/*use alloc::boxed::Box;
 use core::{
     future::Future,
     marker::PhantomData,
@@ -96,16 +106,17 @@ use core::{
     ptr::{self, NonNull},
     sync::atomic::{
         AtomicBool, AtomicPtr,
-        Ordering::{Acquire, Release},
+        Ordering::{Acquire, Release, Relaxed},
     },
     task::{
         Context, Poll,
         Poll::{Pending, Ready},
         Waker,
     },
-};
+    cell::UnsafeCell,
+};*/
 
-mod seal {
+/* mod seal {
     use core::marker::PhantomData;
 
     #[derive(Default, Debug)]
@@ -117,9 +128,32 @@ mod seal {
             For(PhantomData)
         }
     }
-}
+} */
 
-use seal::For;
+// use seal::For;
+
+/*
+#[inline]
+unsafe fn poll_sender(channel: *mut Channel, message: *const T) -> Poll<()> {
+    // Check for ready (for receive).
+    if (*channel).ready.load(Acquire) {
+        // Send data
+        *(*channel).msg.cast() = ptr::read(&message);
+        // Take waker before allowing to be free'd
+        let waker = (*channel).waker.take();
+        // Set ready (for receive) to false.
+        (*channel).ready.store(false, Release);
+        // Wake Receiver
+        // FIXME: Optimization - Atomic to skip wake if unnecessary?
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+        // Done
+        return Ready(());
+    }
+    //
+    Pending
+}
 
 /// Sends a single message (oneshot-rendezvous channel)
 ///
@@ -137,38 +171,21 @@ unsafe impl<T: Send + Unpin> Send for Sender<T> {}
 impl<T: Send + Unpin> Sender<T> {
     /// Send a message
     #[inline]
-    pub(crate) async fn send_and_reuse(&self, mut message: T) {
-        let ptr: *mut _ = &mut message;
+    pub(crate) async fn send_and_reuse(&self, message: T) {
+        let message = ManuallyDrop::new(message);
 
         unsafe {
-            let mut msg = ptr::null_mut();
+            let channel = self.channel.as_ptr();
             for _ in 0..8 {
-                msg =
-                    (*self.channel.as_ptr()).msg.swap(ptr::null_mut(), Acquire);
-                if !msg.is_null() {
-                    break;
+                if poll_sender(channel, &message).is_ready() {
+                    return;
                 }
+                // Hint that this is a spinloop
                 core::hint::spin_loop();
             }
 
             // Wait until receive requested
-            if msg.is_null() {
-                Sender { channel: self.channel, message: ManuallyDrop::new(message), _for: For::new() }.await;
-            } else {
-                // Send data
-                *msg.cast() = message;
-            }
-
-            // Read waker before allowing to be free'd
-            let waker = (*self.channel.as_ptr()).waker.take();
-
-            // Release lock (pointer unused)
-            (*self.channel.as_ptr()).msg.store(ptr.cast(), Release);
-
-            // Wake Receiver
-            if let Some(waker) = waker {
-                waker.wake();
-            }
+            Sender { channel: self.channel, message: ManuallyDrop::new(message), _for: For::new() }.await;
         }
     }
 
@@ -185,28 +202,15 @@ impl<T: Send + Unpin> Sender<T, T> {
         let channel = self.channel.as_ptr();
 
         unsafe {
-            // Lock other waker
-            while (*channel).lock.swap(true, Acquire) {
-                core::hint::spin_loop();
+            match poll_sender(channel, &self.message) {
+                Ready() => {
+                }
+                Pending => {
+                    // Acquire new waker
+                    let waker = cx.waker().clone();
+                    // Assign in waker mutex
+                }
             }
-
-            // Check ready status
-            let ptr = (*channel).msg.swap(ptr::null_mut(), Acquire);
-            let pending = ptr.is_null();
-
-            // Set other waker
-            let waker = cx.waker().clone();
-            (*channel).other = pending.then(move || waker);
-
-            // Release lock on other waker
-            (*channel).lock.store(false, Release);
-
-            if pending {
-                return Pending;
-            }
-
-            *ptr.cast() = ManuallyDrop::take(&mut self.message);
-            Ready(())
         }
     }
 }
@@ -323,26 +327,31 @@ impl Future for Fut {
 }
 
 /// Channel context
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Channel {
-    waker: Option<Waker>,
-    other: Option<Waker>,
+    /// Message passing mechanism
+    ///  1. Init and set to `null()`
+    ///  2. Receiver starts receiving -> Set to destination pointer
+    ///  3. Sender writes to destination pointer once not null
+    ///  4. Sender -> Set back to `null()`
+    ///  5. Receiver -> Assume init and return
     msg: AtomicPtr<()>,
-    lock: AtomicBool,
+    /// Waker for receiver
+    waker: Mutex<Waker>,
+    /// Waker for sender
+    other: Mutex<Waker>,
+    /// Is waking sender necessary?  False if it can be skipped.
+    sender: AtomicBool,
+    /// Is waking receiver necessary?  False if it can be skipped.
+    recver: AtomicBool,
 }
 
-unsafe impl Send for Channel {}
 
 impl Channel {
     /// Create an asynchronous oneshot-rendezvous channel
     #[inline]
     pub fn pair<T: Send + Unpin>() -> (Sender<T>, Receiver<T>) {
-        let channel = Self {
-            waker: None,
-            other: None,
-            msg: ptr::null_mut::<()>().into(),
-            lock: false.into(),
-        };
+        let channel = Self::default();
         let channel = Box::leak(Box::new(channel)).into();
 
         (
@@ -357,7 +366,9 @@ impl Channel {
 
     /// Reuse the context to avoid extra allocation
     #[inline]
-    pub fn to_pair<T: Send + Unpin>(self: Box<Self>) -> (Sender<T>, Receiver<T>) {
+    pub fn to_pair<T>(self: Box<Self>) -> (Sender<T>, Receiver<T>)
+        where T: Send + Unpin
+    {
         let channel = Box::leak(self).into();
 
         (
@@ -444,4 +455,4 @@ impl<T: Send + Unpin> Drop for Tasker<T> {
             panic!("Tasker dropped before Worker");
         }
     }
-}
+} */
