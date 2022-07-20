@@ -5,11 +5,13 @@ enum Cmd {
     Add(u32, u32, Sender<u32>),
 }
 
-async fn worker_main(tasker: Tasker<Cmd>) {
-    while let Some(command) = tasker.recv_next().await {
+async fn worker_main(mut tasker: Tasker<Cmd>) {
+    while let Some(command) = (&mut tasker).await {
         println!("Worker receiving command");
         match command {
-            Cmd::Add(a, b, s) => s.send(a + b).await,
+            Cmd::Add(a, b, s) => {
+                s.send(a + b).await;
+            }
         }
     }
 
@@ -20,14 +22,15 @@ async fn tasker_main() {
     // Create worker on new thread
     println!("Spawning worker…");
     let (worker, tasker) = Channel::new().spsc();
-    let mut worker_thread = std::thread::spawn(move || {
-        pasts::Executor::default().spawn(Box::pin(async move { worker_main(tasker).await }))
+    let worker_thread = std::thread::spawn(move || {
+        pasts::Executor::default()
+            .spawn(Box::pin(async move { worker_main(tasker).await }))
     });
 
     // Do an addition
     println!("Sending command…");
     let (send, recv) = Channel::new().oneshot();
-    worker.send(Cmd::Add(43, 400, send)).await;
+    let worker = worker.send(Cmd::Add(43, 400, send)).await;
     println!("Receiving response…");
     let response = recv.recv().await;
     assert_eq!(response, 443);

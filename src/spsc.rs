@@ -2,9 +2,13 @@
 
 use alloc::boxed::Box;
 use core::{
+    future::Future,
     mem,
     pin::Pin,
-    task::{Context, Poll},
+    task::{
+        Context,
+        Poll::{self, Ready},
+    },
 };
 
 use crate::chan::{Receiving, Sender, Sending};
@@ -22,9 +26,9 @@ impl<T: Send> Worker<T> {
     }
 
     /// Send message to stop the worker
-    pub fn stop(self) -> Message<T> {
+    pub async fn stop(self) {
         let sender: Sender<Option<T>> = unsafe { mem::transmute(self) };
-        Message(sender.send(None))
+        sender.send(None).await;
     }
 }
 
@@ -54,6 +58,14 @@ impl<T: Send> Message<T> {
     }
 }
 
+impl<T: Send> Future for Message<T> {
+    type Output = Worker<T>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.poll_next(cx)
+    }
+}
+
 /// Handle to a tasker, receives tasks
 #[derive(Debug)]
 pub struct Tasker<T: Send>(pub(crate) Receiving<Option<T>>);
@@ -64,8 +76,21 @@ impl<T: Send> Tasker<T> {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<T>> {
-        let recving = unsafe { Pin::new_unchecked(&mut self.0) };
+        let mut recving = unsafe { Pin::new_unchecked(&mut self.0) };
+        let message = recving.as_mut().poll_next_reuse(cx);
 
-        recving.poll_next(cx)
+        if let Ready(None) = message {
+            recving.poll_next_unuse();
+        }
+
+        message
+    }
+}
+
+impl<T: Send> Future for Tasker<T> {
+    type Output = Option<T>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.poll_next(cx)
     }
 }

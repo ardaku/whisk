@@ -40,3 +40,9 @@ libm = "0.2"
 [features]
 default = ["std"]
 std = []
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

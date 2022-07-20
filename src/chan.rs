@@ -3,6 +3,7 @@
 use alloc::boxed::Box;
 use core::{
     cell::{Cell, UnsafeCell},
+    future::Future,
     mem::{ManuallyDrop, MaybeUninit},
     pin::Pin,
     ptr,
@@ -64,7 +65,7 @@ impl Barrier {
         }
     }
 
-    /// Receiver poll fn
+    /// Receiver poll fn (Wait for send ready before copying)
     fn poll_next_recv(&self, cx: &mut Context<'_>) -> Poll<()> {
         self.recv_waker.store(Some(cx.waker().clone())); // FIXME: try-store?
         if self.send_ready.load(Acquire) {
@@ -103,6 +104,13 @@ impl<T: Send> Channel<T> {
     pub fn oneshot(self: Box<Self>) -> (Sender<T>, Receiver<T>) {
         let chan = Box::leak(self);
         (Sender(chan), Receiver(chan))
+    }
+
+    /// Re-use
+    pub(crate) fn reuse(&mut self) {
+        self.barrier.send_ready = AtomicBool::new(false);
+        self.barrier.recv_ready = AtomicBool::new(false);
+        self.message = AtomicPtr::default();
     }
 }
 
@@ -178,6 +186,18 @@ impl<T: Send> Sending<T> {
         if chan.is_null() {
             // Sending has already responded to request
             return Pending;
+        }
+
+        // Barrier point A
+        if unsafe { (*chan).barrier.poll_next_send(cx).is_ready() } {
+            // Reuse channel
+            let mut channel = unsafe { Box::from_raw(self.0.get()) };
+            // Take
+            self.0.set(ptr::null_mut());
+            // Reuse
+            channel.reuse();
+            // Done
+            return Ready(channel);
         } else if unsafe { (*(*chan).message.get_mut()).is_null() } {
             // Receiving hasn't requested yet, set pointer
             unsafe { (*chan).message.store(self.1.get().cast(), Release) };
@@ -185,17 +205,15 @@ impl<T: Send> Sending<T> {
             unsafe { (*chan).barrier.wake_next_send() };
         }
 
-        // Barrier point A
-        if unsafe { (*chan).barrier.poll_next_send(cx).is_ready() } {
-            // Reuse channel
-            let channel = unsafe { Box::from_raw(self.0.get()) };
-            // Take
-            self.0.set(ptr::null_mut());
-            // Done
-            Ready(channel)
-        } else {
-            Pending
-        }
+        Pending
+    }
+}
+
+impl<T: Send> Future for Sending<T> {
+    type Output = Box<Channel<T>>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.poll_next(cx)
     }
 }
 
@@ -215,9 +233,8 @@ unsafe impl<T: Send> Send for Receiving<T> {}
 unsafe impl<T: Send> Sync for Receiving<T> {}
 
 impl<T: Send> Receiving<T> {
-    /// Run an implementation of poll/poll_next for a fused future/notifier.
-    pub fn poll_next(
-        mut self: Pin<&mut Self>,
+    pub(crate) fn poll_next_reuse(
+        self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<T> {
         if self.0.is_null() {
@@ -233,13 +250,37 @@ impl<T: Send> Receiving<T> {
             unsafe { ptr::copy(ptr, message.as_mut_ptr(), 1) };
             // Wake: Barrier point B
             unsafe { (*self.0).barrier.wake_next_recv() };
-            // Take
-            self.0 = ptr::null_mut();
             // Done
             Ready(unsafe { message.assume_init() })
         } else {
             Pending
         }
+    }
+
+    pub(crate) fn poll_next_unuse(mut self: Pin<&mut Self>) {
+        self.0 = ptr::null_mut();
+    }
+
+    /// Run an implementation of poll/poll_next for a fused future/notifier.
+    pub fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<T> {
+        if let Ready(message) = self.as_mut().poll_next_reuse(cx) {
+            // Prevent reuse
+            self.poll_next_unuse();
+            Ready(message)
+        } else {
+            Pending
+        }
+    }
+}
+
+impl<T: Send> Future for Receiving<T> {
+    type Output = T;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.poll_next(cx)
     }
 }
 
