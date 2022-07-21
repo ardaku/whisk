@@ -2,15 +2,15 @@ use std::{ffi::CStr, time::Instant};
 
 use dl_api::manual::DlApi;
 use pasts::prelude::*;
-use whisk::{Channel, Sender, Tasker, Worker};
+use whisk::Channel;
 
 enum Cmd {
     /// Tell messenger to get cosine
-    Cos(f32, Sender<f32>),
+    Cos(f32, Channel<f32>),
 }
 
-async fn worker(tasker: Tasker<Cmd>) {
-    while let Some(command) = tasker.recv_next().await {
+async fn worker(channel: Channel<Option<Cmd>>) {
+    while let Some(command) = channel.recv().await {
         match command {
             Cmd::Cos(a, s) => s.send(libm::cosf(a)).await,
         }
@@ -27,65 +27,61 @@ async fn worker_flume(tasker: flume::Receiver<Cmd>) {
 
 async fn tasker_multi() {
     // Create worker on new thread
-    let mut worker_thread = None;
-    let worker = Worker::new(|tasker| {
-        worker_thread = Some(std::thread::spawn(move || {
-            pasts::Executor::default()
-                .spawn(Box::pin(async move { worker(tasker).await }))
-        }));
+    let chan = Channel::new();
+    let tasker = chan.clone();
+    let worker_thread = std::thread::spawn(move || {
+        pasts::Executor::default()
+            .spawn(Box::pin(async move { worker(tasker).await }))
     });
+    let worker = chan;
 
-    let (send, recv) = Channel::pair();
-    worker.send(Cmd::Cos(750.0, send)).await;
-    let (mut _resp, mut chan) = recv.recv_chan().await;
+    let channel = Channel::new();
     for _ in 1..=1024 {
-        let (send, recv) = chan.to_pair();
-        worker.send(Cmd::Cos(750.0, send)).await;
-        (_resp, chan) = recv.recv_chan().await;
+        worker.send(Some(Cmd::Cos(750.0, channel.clone()))).await;
+        channel.recv().await;
     }
     let now = Instant::now();
     for _ in 1..=1024 * 256 {
-        let (send, recv) = chan.to_pair();
-        worker.send(Cmd::Cos(750.0, send)).await;
-        (_resp, chan) = recv.recv_chan().await;
+        worker.send(Some(Cmd::Cos(750.0, channel.clone()))).await;
+        channel.recv().await;
     }
     let elapsed = now.elapsed() / (1024 * 256);
     println!("Whisk (2-thread): {:?}", elapsed);
 
     // Tell worker to stop
-    worker.stop().await;
-    worker_thread.unwrap().join().unwrap();
+    worker.send(None).await;
+    worker_thread.join().unwrap();
 }
 
 async fn tasker_single(executor: &Executor) {
     // Create worker on new thread
-    let (task, join) = Channel::pair();
-    let worker = Worker::new(|tasker| {
-        executor.spawn(Box::pin(async move {
+    let chan = Channel::new();
+    let join = Channel::new();
+    executor.spawn({
+        let tasker = chan.clone();
+        let join = join.clone();
+        Box::pin(async move {
             worker(tasker).await;
-            task.send(()).await;
-        }))
+            join.send(()).await;
+        })
     });
+    let worker = chan;
 
-    let (send, recv) = Channel::pair();
-    worker.send(Cmd::Cos(750.0, send)).await;
-    let (mut _resp, mut chan) = recv.recv_chan().await;
+    let channel = Channel::new();
     for _ in 1..=1024 {
-        let (send, recv) = chan.to_pair();
-        worker.send(Cmd::Cos(750.0, send)).await;
-        (_resp, chan) = recv.recv_chan().await;
+        worker.send(Some(Cmd::Cos(750.0, channel.clone()))).await;
+        channel.recv().await;
     }
     let now = Instant::now();
     for _ in 1..=1024 * 256 {
-        let (send, recv) = chan.to_pair();
-        worker.send(Cmd::Cos(750.0, send)).await;
-        (_resp, chan) = recv.recv_chan().await;
+        worker.send(Some(Cmd::Cos(750.0, channel.clone()))).await;
+        channel.recv().await;
     }
     let elapsed = now.elapsed() / (1024 * 256);
     println!("Whisk (1-thread): {:?}", elapsed);
 
     // Tell worker to stop
-    worker.stop().await;
+    worker.send(None).await;
     join.recv().await;
 }
 
@@ -97,19 +93,21 @@ async fn flume_multi() {
             .spawn(Box::pin(async move { worker_flume(tasker).await }))
     });
 
-    let (send, recv) = Channel::pair();
-    worker.send_async(Cmd::Cos(750.0, send)).await.unwrap();
-    let (mut _resp, mut chan) = recv.recv_chan().await;
+    let channel = Channel::new();
     for _ in 1..=1024 {
-        let (send, recv) = chan.to_pair();
-        worker.send_async(Cmd::Cos(750.0, send)).await.unwrap();
-        (_resp, chan) = recv.recv_chan().await;
+        worker
+            .send_async(Cmd::Cos(750.0, channel.clone()))
+            .await
+            .unwrap();
+        channel.recv().await;
     }
     let now = Instant::now();
     for _ in 1..=1024 * 256 {
-        let (send, recv) = chan.to_pair();
-        worker.send_async(Cmd::Cos(750.0, send)).await.unwrap();
-        (_resp, chan) = recv.recv_chan().await;
+        worker
+            .send_async(Cmd::Cos(750.0, channel.clone()))
+            .await
+            .unwrap();
+        channel.recv().await;
     }
     let elapsed = now.elapsed() / (1024 * 256);
     println!("Flume (2-thread): {:?}", elapsed);
@@ -121,33 +119,38 @@ async fn flume_multi() {
 
 async fn flume_single(executor: &Executor) {
     // Create worker on new thread
-    let (task, join) = Channel::pair();
+    let join = Channel::new();
     let (worker, tasker) = flume::bounded(0);
-    executor.spawn(Box::pin(async move {
-        worker_flume(tasker).await;
-        task.send(()).await;
-    }));
+    executor.spawn({
+        let join = join.clone();
+        Box::pin(async move {
+            worker_flume(tasker).await;
+            join.send(()).await;
+        })
+    });
 
-    let (send, recv) = Channel::pair();
-    worker.send_async(Cmd::Cos(750.0, send)).await.unwrap();
-    let (mut _resp, mut chan) = recv.recv_chan().await;
+    let channel = Channel::new();
     for _ in 1..=1024 {
-        let (send, recv) = chan.to_pair();
-        worker.send_async(Cmd::Cos(750.0, send)).await.unwrap();
-        (_resp, chan) = recv.recv_chan().await;
+        worker
+            .send_async(Cmd::Cos(750.0, channel.clone()))
+            .await
+            .unwrap();
+        channel.recv().await;
     }
     let now = Instant::now();
     for _ in 1..=1024 * 256 {
-        let (send, recv) = chan.to_pair();
-        worker.send_async(Cmd::Cos(750.0, send)).await.unwrap();
-        (_resp, chan) = recv.recv_chan().await;
+        worker
+            .send_async(Cmd::Cos(750.0, channel.clone()))
+            .await
+            .unwrap();
+        channel.recv().await;
     }
     let elapsed = now.elapsed() / (1024 * 256);
     println!("Flume (1-thread): {:?}", elapsed);
 
     // Tell worker to stop
     drop(worker);
-    join.recv().await;
+    join.await;
 }
 
 async fn dyn_lib() {

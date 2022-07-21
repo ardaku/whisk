@@ -1,16 +1,10 @@
-//! Sender/Receiver Channel implementation
-
-use alloc::boxed::Box;
+use alloc::{sync::Arc, vec::Vec};
 use core::{
-    cell::{Cell, UnsafeCell},
+    cell::UnsafeCell,
     future::Future,
-    mem::{ManuallyDrop, MaybeUninit},
+    mem::ManuallyDrop,
     pin::Pin,
-    ptr,
-    sync::atomic::{
-        AtomicBool, AtomicPtr,
-        Ordering::{Acquire, Release, Relaxed},
-    },
+    ptr::{self, NonNull},
     task::{
         Context,
         Poll::{self, Pending, Ready},
@@ -18,294 +12,127 @@ use core::{
     },
 };
 
-use crate::{
-    spin::SpinLock,
-    spsc::{Tasker, Worker},
-};
+use crate::spin::SpinLock;
 
-/// Rendezvous barrier
-#[derive(Default, Debug)]
-struct Barrier {
-    /// Waker for sender future
-    send_waker: SpinLock<Waker>,
-    /// Waker for receiver future
-    recv_waker: SpinLock<Waker>,
-    /// Sender future started
-    send_ready: AtomicBool,
-    /// Receiver future started
-    recv_ready: AtomicBool,
+#[derive(Debug)]
+struct Shared<T: Send> {
+    /// Address of data being sent
+    addr: Option<NonNull<T>>,
+    /// Wakers
+    wake: Vec<Waker>,
 }
 
-impl Barrier {
-    /// Sender wake fn
-    fn wake_next_send(&self) {
-        self.recv_waker.with(|waker| {
-            self.send_ready.store(true, Release);
-            if let Some(waker) = waker.take() {
-                // FIXME: try-take opt
-                waker.wake();
-            } else {
-                std::println!("no waky");
-            }
-        });
+impl<T: Send> Default for Shared<T> {
+    fn default() -> Self {
+        let addr = None;
+        let wake = Vec::new();
+
+        Self { addr, wake }
+    }
+}
+
+unsafe impl<T: Send> Send for Shared<T> {}
+
+/// A `Channel` notifies when another `Channel` sends a message.
+///
+/// Implemented as a rendezvous multi-producer/multi-consumer queue
+#[derive(Debug)]
+pub struct Channel<T: Send>(Arc<SpinLock<Shared<T>>>);
+
+impl<T: Send> Clone for Channel<T> {
+    fn clone(&self) -> Self {
+        Channel(Arc::clone(&self.0))
+    }
+}
+
+impl<T: Send> Default for Channel<T> {
+    fn default() -> Self {
+        Self(Arc::new(SpinLock::default()))
+    }
+}
+
+impl<T: Send> Channel<T> {
+    /// Create a new channel.
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    /// Sender poll fn
-    fn poll_next_send(&self, cx: &mut Context<'_>) -> Poll<()> {
-        // FIXME: try-store?
-        self.send_waker.with(|w| {
-            *w = Some(cx.waker().clone());
-            if self.recv_ready.load(Acquire) {
-                Ready(())
-            } else {
-                Pending
-            }
-        }) 
+    /// Send a message on this channel.
+    #[inline(always)]
+    pub fn send(&self, message: T) -> Message<T> {
+        Message(
+            (*self).clone(),
+            ManuallyDrop::new(UnsafeCell::new(message)),
+            false,
+        )
     }
 
-    /// Receiver wake fn
-    fn wake_next_recv(&self) {
-        self.send_waker.with(|waker| {
-            self.recv_ready.store(true, Release);
-            if let Some(waker) = waker.take() {
-                // FIXME: try-take opt
-                waker.wake();
-            } else {
-                std::println!("no wakey");
-            }
-            self.send_ready.store(false, Release);
-        });
+    /// Receive a message from this channel.
+    #[inline(always)]
+    pub async fn recv(&self) -> T {
+        self.clone().await
     }
+}
 
-    /// Receiver poll fn (Wait for send ready before copying)
-    fn poll_next_recv(&self, cx: &mut Context<'_>) -> Poll<()> {
-        // FIXME: try-store?
-        self.recv_waker.with(|w| {
-            *w = Some(cx.waker().clone());
-            if self.send_ready.load(Acquire) {
-                Ready(())
+impl<T: Send> Future for Channel<T> {
+    type Output = T;
+
+    #[inline]
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let waker = cx.waker().clone();
+        self.0.with(|shared| {
+            if let Some(ptr) = shared.addr {
+                let output = unsafe { ptr::read(ptr.as_ref()) };
+                shared.addr = None;
+                for waker in shared.wake.drain(..) {
+                    waker.wake();
+                }
+                Ready(output)
             } else {
+                // If a sender hasn't sent, return not ready
+                shared.wake.push(waker);
                 Pending
             }
         })
     }
 }
 
-/// A reuseable channel
+/// A message in the process of being sent over a [`Channel`].
 #[derive(Debug)]
-pub struct Channel<T: Send> {
-    /// Barrier to synchronize tasks
-    barrier: Barrier,
-    /// Message passing mechanism
-    ///  1. Init and set to `null()`
-    ///  2. Sender init -> Set pinned src pointer
-    ///  3. Sender wake receiver (barrier point A)
-    ///  4. Receiver copy to dest
-    ///  5. Receiver wake sender (barrier point B)
-    message: AtomicPtr<T>,
-}
+pub struct Message<T: Send>(Channel<T>, ManuallyDrop<UnsafeCell<T>>, bool);
 
-impl<T: Send> Channel<T> {
-    /// Create a reusable channel.
-    pub fn new() -> Box<Self> {
-        Self {
-            barrier: Barrier::default(),
-            message: AtomicPtr::default(),
-        }
-        .into()
-    }
-
-    /// Convert into oneshot sender/receiver handles
-    pub fn oneshot(self: Box<Self>) -> (Sender<T>, Receiver<T>) {
-        let chan = Box::leak(self);
-        (Sender(chan), Receiver(chan))
-    }
-
-    /// Re-use
-    pub(crate) fn reuse(&mut self) {
-        while self.barrier.send_ready.load(Relaxed) {
-            core::hint::spin_loop();
-        }
-        core::sync::atomic::fence(Acquire);
-        self.barrier.recv_ready = AtomicBool::new(false);
-        self.message = AtomicPtr::default();
+impl<T: Send> Message<T> {
+    #[inline(always)]
+    fn pin_get_init(self: Pin<&mut Self>) -> &mut bool {
+        // This is okay because `2` is never considered pinned.
+        unsafe { &mut self.get_unchecked_mut().2 }
     }
 }
 
-impl<T: Send> Channel<Option<T>> {
-    /// Convert into spsc worker/tasker handles
-    pub fn spsc(self: Box<Self>) -> (Worker<T>, Tasker<T>) {
-        let (sender, receiver) = self.oneshot();
-        (Worker(sender), Tasker(receiver.recv()))
-    }
-}
+impl<T: Send> Future for Message<T> {
+    type Output = ();
 
-/// Oneshot sender
-#[derive(Debug)]
-pub struct Sender<T: Send>(pub(crate) *mut Channel<T>);
-
-unsafe impl<T: Send> Send for Sender<T> {}
-unsafe impl<T: Send> Sync for Sender<T> {}
-
-impl<T: Send> Sender<T> {
-    /// Send a message
-    pub fn send(self, value: T) -> Sending<T> {
-        let channel = self.0;
-        core::mem::forget(self);
-        Sending(
-            Cell::new(channel),
-            UnsafeCell::new(ManuallyDrop::new(value)),
-        )
-    }
-}
-
-impl<T: Send> Drop for Sender<T> {
-    fn drop(&mut self) {
-        panic!("Dropped oneshot without sending");
-    }
-}
-
-/// Oneshot receiver
-#[derive(Debug)]
-pub struct Receiver<T: Send>(*mut Channel<T>);
-
-unsafe impl<T: Send> Send for Receiver<T> {}
-unsafe impl<T: Send> Sync for Receiver<T> {}
-
-impl<T: Send> Receiver<T> {
-    /// Receive from `Sender`.
-    pub fn recv(self) -> Receiving<T> {
-        let channel = self.0;
-        core::mem::forget(self);
-        Receiving(channel)
-    }
-}
-
-impl<T: Send> Drop for Receiver<T> {
-    fn drop(&mut self) {
-        panic!("Dropped oneshot without receiving");
-    }
-}
-
-/// Sender future / notifier / stream
-#[derive(Debug)]
-pub struct Sending<T: Send>(Cell<*mut Channel<T>>, UnsafeCell<ManuallyDrop<T>>);
-
-unsafe impl<T: Send> Send for Sending<T> {}
-unsafe impl<T: Send> Sync for Sending<T> {}
-
-impl<T: Send> Sending<T> {
-    /// Run an implementation of poll/poll_next for a fused future/notifier.
-    pub fn poll_next(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Box<Channel<T>>> {
-        let chan = self.0.get();
-        if chan.is_null() {
-            // Sending has already responded to request
-            return Pending;
-        }
-
-        // Barrier point A
-        if unsafe { (*chan).barrier.poll_next_send(cx).is_ready() } {
-            // Wait for receiver to stop using
-            unsafe { (*self.0.get()).reuse() };
-            // Reuse channel
-            let channel = unsafe { Box::from_raw(self.0.get()) };
-            // Take
-            self.0.set(ptr::null_mut());
-            // Done
-            return Ready(channel);
-        } else if unsafe { (*(*chan).message.get_mut()).is_null() } {
-            // Receiving hasn't requested yet, set pointer
-            unsafe { (*chan).message.store(self.1.get().cast(), Release) };
-            // Wake
-            unsafe { (*chan).barrier.wake_next_send() };
-        }
-
-        Pending
-    }
-}
-
-impl<T: Send> Future for Sending<T> {
-    type Output = Box<Channel<T>>;
-
+    #[inline]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.poll_next(cx)
-    }
-}
-
-impl<T: Send> Drop for Sending<T> {
-    fn drop(&mut self) {
-        if !self.0.get().is_null() {
-            panic!("Sending dropped before sending");
-        }
-    }
-}
-
-/// Receiver future / notifier /stream
-#[derive(Debug)]
-pub struct Receiving<T: Send>(*mut Channel<T>);
-
-unsafe impl<T: Send> Send for Receiving<T> {}
-unsafe impl<T: Send> Sync for Receiving<T> {}
-
-impl<T: Send> Receiving<T> {
-    pub(crate) fn poll_next_reuse(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<T> {
-        if self.0.is_null() {
-            return Pending;
-        }
-
-        let ptr = unsafe { (*self.0).message.load(Acquire) };
-        if ptr.is_null() {
-            Pending
-        } else if unsafe { (*self.0).barrier.poll_next_recv(cx).is_ready() } {
-            let mut message = MaybeUninit::uninit();
-            // Move
-            unsafe { ptr::copy(ptr, message.as_mut_ptr(), 1) };
-            // Wake: Barrier point B
-            unsafe { (*self.0).barrier.wake_next_recv() };
-            // Done
-            Ready(unsafe { message.assume_init() })
-        } else {
-            Pending
-        }
-    }
-
-    pub(crate) fn poll_next_unuse(mut self: Pin<&mut Self>) {
-        self.0 = ptr::null_mut();
-    }
-
-    /// Run an implementation of poll/poll_next for a fused future/notifier.
-    pub fn poll_next(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<T> {
-        if let Ready(message) = self.as_mut().poll_next_reuse(cx) {
-            // Prevent reuse
-            self.poll_next_unuse();
-            Ready(message)
-        } else {
-            Pending
-        }
-    }
-}
-
-impl<T: Send> Future for Receiving<T> {
-    type Output = T;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.poll_next(cx)
-    }
-}
-
-impl<T: Send> Drop for Receiving<T> {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            panic!("Receiving dropped before receiving");
-        }
+        let mut this = self;
+        let waker = cx.waker().clone();
+        this.0.clone().0.with(|shared| {
+            if this.2 {
+                if shared.addr.is_none() {
+                    Ready(())
+                } else {
+                    shared.wake.push(waker);
+                    Pending
+                }
+            } else {
+                *this.as_mut().pin_get_init() = true;
+                shared.addr = NonNull::new(this.1.get());
+                shared.wake.push(waker);
+                for waker in shared.wake.drain(..shared.wake.len() - 1) {
+                    waker.wake();
+                }
+                Pending
+            }
+        })
     }
 }

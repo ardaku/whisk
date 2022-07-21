@@ -8,15 +8,15 @@
 //! # Getting Started
 //!
 //! ```rust
-//! use whisk::{Channel, Sender, Tasker};
-//! 
+//! use whisk::Channel;
+//!
 //! enum Cmd {
 //!     /// Tell messenger to add
-//!     Add(u32, u32, Sender<u32>),
+//!     Add(u32, u32, Channel<u32>),
 //! }
-//! 
-//! async fn worker_main(mut tasker: Tasker<Cmd>) {
-//!     while let Some(command) = (&mut tasker).await {
+//!
+//! async fn worker_main(channel: Channel<Option<Cmd>>) {
+//!     while let Some(command) = channel.recv().await {
 //!         println!("Worker receiving command");
 //!         match command {
 //!             Cmd::Add(a, b, s) => {
@@ -24,32 +24,35 @@
 //!             }
 //!         }
 //!     }
-//! 
+//!
 //!     println!("Worker stopping…");
 //! }
-//! 
+//!
 //! async fn tasker_main() {
 //!     // Create worker on new thread
 //!     println!("Spawning worker…");
-//!     let (worker, tasker) = Channel::new().spsc();
-//!     let worker_thread = std::thread::spawn(move || {
-//!         pasts::Executor::default()
-//!             .spawn(Box::pin(async move { worker_main(tasker).await }))
-//!     });
-//! 
+//!     let channel = Channel::new();
+//!     let worker_thread = {
+//!         let channel = channel.clone();
+//!         std::thread::spawn(move || {
+//!             pasts::Executor::default()
+//!                 .spawn(Box::pin(async move { worker_main(channel).await }))
+//!         })
+//!     };
+//!
 //!     // Do an addition
 //!     println!("Sending command…");
-//!     let (send, recv) = Channel::new().oneshot();
-//!     let worker = worker.send(Cmd::Add(43, 400, send)).await;
+//!     let oneshot = Channel::new();
+//!     channel.send(Some(Cmd::Add(43, 400, oneshot.clone()))).await;
 //!     println!("Receiving response…");
-//!     let response = recv.recv().await;
+//!     let response = oneshot.await;
 //!     assert_eq!(response, 443);
-//! 
+//!
 //!     // Tell worker to stop
 //!     println!("Stopping worker…");
-//!     worker.stop().await;
+//!     channel.send(None).await;
 //!     println!("Waiting for worker to stop…");
-//! 
+//!
 //!     worker_thread.join().unwrap();
 //!     println!("Worker thread joined");
 //! }
@@ -88,15 +91,8 @@ extern crate alloc;
 extern crate std;
 
 // SpinLock implementation (used for transfer of wakers)
-mod spin;/*
+mod spin;
 // Channel implementation
 mod chan;
-// Spsc implementation
-mod spsc;*/
-// Watch implementation
-mod watch;
 
-// pub use chan::{Channel, Receiver, Receiving, Sender, Sending};
-// pub use spsc::{Message, Tasker, Worker};
-
-pub use watch::{Channel, Message};
+pub use chan::{Channel, Message};

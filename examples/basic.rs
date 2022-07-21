@@ -25,9 +25,9 @@ async fn tasker_main() {
     let worker_thread = {
         let channel = channel.clone();
         std::thread::spawn(move || {
-        pasts::Executor::default()
-            .spawn(Box::pin(async move { worker_main(channel).await }))
-    })
+            pasts::Executor::default()
+                .spawn(Box::pin(async move { worker_main(channel).await }))
+        })
     };
 
     // Do an addition

@@ -1,12 +1,12 @@
-use whisk::{Channel, Sender, Tasker};
+use whisk::Channel;
 
 enum Cmd {
     /// Tell messenger to add
-    Add(u32, u32, Sender<u32>),
+    Add(u32, u32, Channel<u32>),
 }
 
-async fn worker_main(mut tasker: Tasker<Cmd>) {
-    while let Some(command) = (&mut tasker).await {
+async fn worker_main(channel: Channel<Option<Cmd>>) {
+    while let Some(command) = channel.recv().await {
         println!("Worker receiving command");
         match command {
             Cmd::Add(a, b, s) => {
@@ -21,26 +21,28 @@ async fn worker_main(mut tasker: Tasker<Cmd>) {
 async fn tasker_main() {
     // Create worker on new thread
     println!("Spawning worker…");
-    let (worker, tasker) = Channel::new().spsc();
-    let worker_thread = std::thread::spawn(move || {
-        pasts::Executor::default()
-            .spawn(Box::pin(async move { worker_main(tasker).await }))
-    });
+    let channel = Channel::new();
+    let worker_thread = {
+        let channel = channel.clone();
+        std::thread::spawn(move || {
+            pasts::Executor::default()
+                .spawn(Box::pin(async move { worker_main(channel).await }))
+        })
+    };
 
     // Do an addition
-    let mut worker = worker;
-    for _ in 0..16 {
-        let (send, recv) = Channel::new().oneshot();
+    let oneshot = Channel::new();
+    for _ in 0..32 {
         println!("Sending command…");
-        worker = worker.send(Cmd::Add(43, 400, send)).await;
+        channel.send(Some(Cmd::Add(43, 400, oneshot.clone()))).await;
         println!("Receiving response…");
-        let response = recv.recv().await;
+        let response = oneshot.recv().await;
         assert_eq!(response, 443);
     }
 
     // Tell worker to stop
     println!("Stopping worker…");
-    worker.stop().await;
+    channel.send(None).await;
     println!("Waiting for worker to stop…");
 
     worker_thread.join().unwrap();
