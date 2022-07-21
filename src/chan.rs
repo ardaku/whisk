@@ -9,7 +9,7 @@ use core::{
     ptr,
     sync::atomic::{
         AtomicBool, AtomicPtr,
-        Ordering::{Acquire, Release},
+        Ordering::{Acquire, Release, Relaxed},
     },
     task::{
         Context,
@@ -39,40 +39,55 @@ struct Barrier {
 impl Barrier {
     /// Sender wake fn
     fn wake_next_send(&self) {
-        self.send_ready.store(true, Release);
-        if let Some(waker) = self.recv_waker.take() {
-            // FIXME: try-take opt
-            waker.wake();
-        }
+        self.recv_waker.with(|waker| {
+            self.send_ready.store(true, Release);
+            if let Some(waker) = waker.take() {
+                // FIXME: try-take opt
+                waker.wake();
+            } else {
+                std::println!("no waky");
+            }
+        });
     }
 
     /// Sender poll fn
     fn poll_next_send(&self, cx: &mut Context<'_>) -> Poll<()> {
-        self.send_waker.store(Some(cx.waker().clone())); // FIXME: try-store?
-        if self.recv_ready.load(Acquire) {
-            Ready(())
-        } else {
-            Pending
-        }
+        // FIXME: try-store?
+        self.send_waker.with(|w| {
+            *w = Some(cx.waker().clone());
+            if self.recv_ready.load(Acquire) {
+                Ready(())
+            } else {
+                Pending
+            }
+        }) 
     }
 
     /// Receiver wake fn
     fn wake_next_recv(&self) {
-        self.recv_ready.store(true, Release);
-        if let Some(waker) = self.send_waker.take() {
-            // FIXME: try-take opt
-            waker.wake();
-        }
+        self.send_waker.with(|waker| {
+            self.recv_ready.store(true, Release);
+            if let Some(waker) = waker.take() {
+                // FIXME: try-take opt
+                waker.wake();
+            } else {
+                std::println!("no wakey");
+            }
+            self.send_ready.store(false, Release);
+        });
     }
 
     /// Receiver poll fn (Wait for send ready before copying)
     fn poll_next_recv(&self, cx: &mut Context<'_>) -> Poll<()> {
-        self.recv_waker.store(Some(cx.waker().clone())); // FIXME: try-store?
-        if self.send_ready.load(Acquire) {
-            Ready(())
-        } else {
-            Pending
-        }
+        // FIXME: try-store?
+        self.recv_waker.with(|w| {
+            *w = Some(cx.waker().clone());
+            if self.send_ready.load(Acquire) {
+                Ready(())
+            } else {
+                Pending
+            }
+        })
     }
 }
 
@@ -108,7 +123,10 @@ impl<T: Send> Channel<T> {
 
     /// Re-use
     pub(crate) fn reuse(&mut self) {
-        self.barrier.send_ready = AtomicBool::new(false);
+        while self.barrier.send_ready.load(Relaxed) {
+            core::hint::spin_loop();
+        }
+        core::sync::atomic::fence(Acquire);
         self.barrier.recv_ready = AtomicBool::new(false);
         self.message = AtomicPtr::default();
     }
@@ -190,12 +208,12 @@ impl<T: Send> Sending<T> {
 
         // Barrier point A
         if unsafe { (*chan).barrier.poll_next_send(cx).is_ready() } {
+            // Wait for receiver to stop using
+            unsafe { (*self.0.get()).reuse() };
             // Reuse channel
-            let mut channel = unsafe { Box::from_raw(self.0.get()) };
+            let channel = unsafe { Box::from_raw(self.0.get()) };
             // Take
             self.0.set(ptr::null_mut());
-            // Reuse
-            channel.reuse();
             // Done
             return Ready(channel);
         } else if unsafe { (*(*chan).message.get_mut()).is_null() } {

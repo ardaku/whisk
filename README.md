@@ -10,7 +10,8 @@
 
 #### Simple and fast async channels
 Whisk provides oneshot-rendezvous and spsc channels that can be used to
-implement futures, streams, notifiers, and actors.
+implement futures, streams, notifiers, and actors.  Whisk is purposely kept
+small, implemented in under 500 lines of code - and also works on `no_std`!
 
 ## MSRV
 Whisk targets Rust 1.59.0 and later.
