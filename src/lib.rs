@@ -85,6 +85,7 @@
     unused_qualifications,
     variant_size_differences
 )]
+#![deny(unsafe_code)]
 
 extern crate alloc;
 
@@ -104,26 +105,34 @@ use core::{
     },
 };
 
-/// A spinlock
-#[derive(Debug, Default)]
-struct Spin<T: Default> {
-    flag: AtomicBool,
-    data: UnsafeCell<T>,
-}
+#[allow(unsafe_code)]
+mod spin {
+    use super::*;
 
-impl<T: Default> Spin<T> {
-    #[inline(always)]
-    fn with<O>(&self, then: impl FnOnce(&mut T) -> O) -> O {
-        while self
-            .flag
-            .compare_exchange_weak(false, true, Relaxed, Relaxed)
-            .is_err()
-        {}
-        atomic::fence(Acquire);
-        let output = then(unsafe { &mut *self.data.get() });
-        self.flag.store(false, Release);
-        output
+    /// A spinlock
+    #[derive(Debug, Default)]
+    pub(super) struct Spin<T: Default> {
+        flag: AtomicBool,
+        data: UnsafeCell<T>,
     }
+
+    impl<T: Default> Spin<T> {
+        #[inline(always)]
+        pub(super) fn with<O>(&self, then: impl FnOnce(&mut T) -> O) -> O {
+            while self
+                .flag
+                .compare_exchange_weak(false, true, Relaxed, Relaxed)
+                .is_err()
+            {}
+            atomic::fence(Acquire);
+            let output = then(unsafe { &mut *self.data.get() });
+            self.flag.store(false, Release);
+            output
+        }
+    }
+
+    unsafe impl<T: Default + Send> Send for Spin<T> {}
+    unsafe impl<T: Default + Send> Sync for Spin<T> {}
 }
 
 #[derive(Debug)]
@@ -146,11 +155,8 @@ impl<T: Send> Default for Locked<T> {
 
 #[derive(Debug, Default)]
 struct Shared<T: Send> {
-    spin: Spin<Locked<T>>,
+    spin: spin::Spin<Locked<T>>,
 }
-
-unsafe impl<T: Send> Send for Shared<T> {}
-unsafe impl<T: Send + Unpin> Send for Channel<T> {}
 
 /// A `Channel` notifies when another `Channel` sends a message.
 ///
@@ -169,7 +175,7 @@ impl<T: Send + Unpin> Default for Channel<T> {
     #[inline]
     fn default() -> Self {
         Self(Arc::new(Shared {
-            spin: Spin::default(),
+            spin: spin::Spin::default(),
         }))
     }
 }
