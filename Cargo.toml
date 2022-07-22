@@ -38,8 +38,7 @@ ntest = "0.8"
 libm = "0.2"
 
 [features]
-default = ["std"]
-std = []
+default = []
 
 [profile.dev]
 panic = "abort"

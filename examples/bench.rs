@@ -87,7 +87,7 @@ async fn tasker_single(executor: &Executor) {
 
 async fn flume_multi() {
     // Create worker on new thread
-    let (worker, tasker) = flume::bounded(0);
+    let (worker, tasker) = flume::bounded(1);
     let worker_thread = std::thread::spawn(move || {
         pasts::Executor::default()
             .spawn(Box::pin(async move { worker_flume(tasker).await }))
@@ -120,7 +120,7 @@ async fn flume_multi() {
 async fn flume_single(executor: &Executor) {
     // Create worker on new thread
     let join = Channel::new();
-    let (worker, tasker) = flume::bounded(0);
+    let (worker, tasker) = flume::bounded(1);
     executor.spawn({
         let join = join.clone();
         Box::pin(async move {
