@@ -11,7 +11,7 @@
 [package]
 name = "whisk"
 version = "0.3.0"
-license = "Apache-2.0 OR MIT OR BSL-1.0"
+license = "Apache-2.0 OR BSL-1.0 OR MIT"
 description = "Simple and fast async channels"
 repository = "https://github.com/ardaku/whisk"
 documentation = "https://docs.rs/whisk"
@@ -24,7 +24,7 @@ categories = [
     "hardware-support",
     "no-std",
 ]
-keywords = ["channel", "actor", "spsc", "oneshot", "rendezvous"]
+keywords = ["channel", "actor", "mpmc", "notifier", "pasts"]
 readme = "README.md"
 edition = "2021"
 rust-version = "1.59"

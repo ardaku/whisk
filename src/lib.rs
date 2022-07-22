@@ -1,6 +1,6 @@
 //! #### Simple and fast async channels
-//! Whisk provides oneshot-rendezvous and spsc channels that can be used to
-//! implement futures, streams, notifiers, and actors.
+//! Simple and fast async channels that can be used to implement futures,
+//! streams, notifiers, and actors.
 //!
 //! # Optional Features
 //! The `std` feature is enabled by default, disable it to use on **no_std**.
