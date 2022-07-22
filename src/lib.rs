@@ -215,6 +215,12 @@ struct Shared<T: Send, const S: usize, const R: usize> {
 ///
 /// Const generic `R` is the upper bound on the number of channels that can be
 /// receiving at once (doesn't include inactive channels).
+///
+/// Enable the **`futures-core`** feature for `Channel` to implement
+/// [`Stream`](futures_core::Stream).
+///
+/// Enable the **`pasts`** feature for `Channel` to implement
+/// [`Notifier`](pasts::Notifier).
 #[derive(Debug)]
 pub struct Channel<T: Send + Unpin, const S: usize = 1, const R: usize = 1>(
     Arc<Shared<T, S, R>>,
@@ -286,6 +292,36 @@ where
                 Pending
             }
         })
+    }
+}
+
+#[cfg(feature = "pasts")]
+impl<T, const S: usize, const R: usize> pasts::Notifier for Channel<T, S, R>
+where
+    T: Send + Unpin,
+{
+    type Event = T;
+
+    #[inline(always)]
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<T> {
+        self.poll(cx)
+    }
+}
+
+#[cfg(feature = "futures-core")]
+impl<T, const S: usize, const R: usize> futures_core::Stream
+    for Channel<Option<T>, S, R>
+where
+    T: Send + Unpin,
+{
+    type Item = T;
+
+    #[inline(always)]
+    fn poll_next(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        self.poll(cx)
     }
 }
 

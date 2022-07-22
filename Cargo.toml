@@ -29,6 +29,14 @@ readme = "README.md"
 edition = "2021"
 rust-version = "1.59"
 
+[dependencies.futures-core]
+version = "0.3"
+optional = true
+
+[dependencies.pasts]
+version = "0.11"
+optional = true
+
 [dev-dependencies]
 pasts = "0.11"
 dl_api = "0.4"
@@ -45,3 +53,6 @@ panic = "abort"
 
 [profile.release]
 panic = "abort"
+
+[package.metadata.docs.rs]
+all-features = true
