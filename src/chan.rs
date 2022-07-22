@@ -2,9 +2,7 @@ use alloc::{sync::Arc, vec::Vec};
 use core::{
     cell::UnsafeCell,
     future::Future,
-    mem::ManuallyDrop,
     pin::Pin,
-    ptr,
     task::{
         Context,
         Poll::{self, Pending, Ready},
@@ -40,8 +38,8 @@ impl Mutex {
 
 #[derive(Debug)]
 struct Locked<T: Send> {
-    /// Address of data being sent
-    addr: *mut ManuallyDrop<T>,
+    /// Data in transit
+    data: Option<T>,
     /// Wakers
     wake: Vec<Waker>,
 }
@@ -49,10 +47,10 @@ struct Locked<T: Send> {
 impl<T: Send> Default for Locked<T> {
     #[inline]
     fn default() -> Self {
-        let addr = ptr::null_mut();
+        let data = None;
         let wake = Vec::new();
 
-        Self { addr, wake }
+        Self { data, wake }
     }
 }
 
@@ -77,7 +75,7 @@ unsafe impl<T: Send> Send for Channel<T> {}
 
 /// A `Channel` notifies when another `Channel` sends a message.
 ///
-/// Implemented as a rendezvous multi-producer/multi-consumer queue
+/// Implemented as a multi-producer/multi-consumer queue of size 1
 #[derive(Debug)]
 pub struct Channel<T: Send>(Arc<Shared<T>>);
 
@@ -105,11 +103,7 @@ impl<T: Send> Channel<T> {
     /// Send a message on this channel.
     #[inline(always)]
     pub fn send(&self, message: T) -> Message<T> {
-        Message(
-            (*self).clone(),
-            ManuallyDrop::new(message),
-            false,
-        )
+        Message((*self).clone(), Some(message))
     }
 
     /// Receive a message from this channel.
@@ -128,18 +122,13 @@ impl<T: Send> Future for Channel<T> {
         let waker = cx.waker();
         this.0.mutex.lock();
         let output = {
-            let shared = unsafe { &mut *this.0.data.get() };
-            let ptr = shared.addr;
-            if !ptr.is_null() {
-                let output = unsafe { ManuallyDrop::take(&mut ptr::read(ptr)) };
-                shared.addr = ptr::null_mut();
-                for waker in shared.wake.drain(..) {
+            if let Some(output) = unsafe { (*this.0.data.get()).data.take() } {
+                for waker in unsafe { (*this.0.data.get()).wake.drain(..) } {
                     waker.wake();
                 }
                 Ready(output)
             } else {
-                shared.wake.push(waker.clone());
-                // If a sender hasn't sent, return not ready
+                unsafe { (*this.0.data.get()).wake.push(waker.clone()) };
                 Pending
             }
         };
@@ -150,23 +139,17 @@ impl<T: Send> Future for Channel<T> {
 
 /// A message in the process of being sent over a [`Channel`].
 #[derive(Debug)]
-pub struct Message<T: Send>(Channel<T>, ManuallyDrop<T>, bool);
+pub struct Message<T: Send>(Channel<T>, Option<T>);
 
 impl<T: Send> Message<T> {
     #[inline(always)]
-    fn pin_get_data(self: Pin<&mut Self>) -> Pin<&mut ManuallyDrop<T>> {
+    fn pin_get_data(self: Pin<&mut Self>) -> Pin<&mut Option<T>> {
         // This is okay because `1` is pinned when `self` is.
         unsafe { self.map_unchecked_mut(|s| &mut s.1) }
     }
-
-    #[inline(always)]
-    fn pin_get_init(self: Pin<&mut Self>) -> &mut bool {
-        // This is okay because `2` is never considered pinned.
-        unsafe { &mut self.get_unchecked_mut().2 }
-    }
 }
 
-impl<T: Send> Future for Message<T> {
+impl<T: Send + Unpin> Future for Message<T> {
     type Output = ();
 
     #[inline]
@@ -175,20 +158,14 @@ impl<T: Send> Future for Message<T> {
         let waker = cx.waker();
         this.0.0.mutex.lock();
         let output = {
-            let shared = unsafe { &mut *this.0.0.data.get() };
-            shared.wake.insert(0, waker.clone());
-            if this.2 {
-                if shared.addr.is_null() {
-                    Ready(())
-                } else {
-                    Pending
-                }
-            } else {
-                *this.as_mut().pin_get_init() = true;
-                shared.addr = unsafe { this.as_mut().pin_get_data().get_unchecked_mut() };
-                for waker in shared.wake.drain(1..) {
+            if unsafe { (*this.0.0.data.get()).data.is_none() } {
+                unsafe { (*this.0.0.data.get()).data = this.as_mut().pin_get_data().get_mut().take() };
+                for waker in unsafe { (*this.0.0.data.get()).wake.drain(..) } {
                     waker.wake();
                 }
+                Ready(())
+            } else {
+                unsafe { (*this.0.0.data.get()).wake.push(waker.clone()) };
                 Pending
             }
         };
@@ -199,13 +176,8 @@ impl<T: Send> Future for Message<T> {
 
 impl<T: Send> Drop for Message<T> {
     fn drop(&mut self) {
-        self.0.0.mutex.lock();
-        {
-            let shared = unsafe { &mut *self.0.0.data.get() };
-            if !self.2 || !shared.addr.is_null() {
-                panic!("Message dropped without sending");
-            }
+        if self.1.is_some() {
+            panic!("Message dropped without sending");
         }
-        self.0.0.mutex.unlock();
     }
 }
