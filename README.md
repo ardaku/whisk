@@ -14,7 +14,7 @@ notifiers, and actors.  Whisk is purposely kept small, implemented in under 500
 lines of code - and also works on `no_std`!
 
 ## MSRV
-Whisk targets Rust 1.59.0 and later.
+Whisk targets Rust 1.60.0 and later.
 
 ## Benchmarks
 Benchmarks for v0.3.0 mpmc call on pasts runtime (compared to dynamic library):
