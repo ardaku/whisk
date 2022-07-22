@@ -104,7 +104,6 @@ use core::{
     },
 };
 
-// Copied from https://doc.rust-lang.org/core/sync/atomic/fn.fence.html#examples
 #[derive(Debug, Default)]
 struct Mutex {
     flag: AtomicBool,
@@ -112,20 +111,16 @@ struct Mutex {
 
 impl Mutex {
     #[inline(always)]
-    fn lock(&self) {
-        // Wait until the old value is `false`.
+    fn with<O>(&self, then: impl FnOnce() -> O) -> O {
         while self
             .flag
             .compare_exchange_weak(false, true, Relaxed, Relaxed)
             .is_err()
         {}
-        // This fence synchronizes-with store in `unlock`.
         atomic::fence(Acquire);
-    }
-
-    #[inline(always)]
-    fn unlock(&self) {
+        let output = then();
         self.flag.store(false, Release);
+        output
     }
 }
 
@@ -164,29 +159,29 @@ impl<T: Send> Default for Shared<T> {
 }
 
 unsafe impl<T: Send> Send for Shared<T> {}
-unsafe impl<T: Send> Send for Channel<T> {}
+unsafe impl<T: Send + Unpin> Send for Channel<T> {}
 
 /// A `Channel` notifies when another `Channel` sends a message.
 ///
 /// Implemented as a multi-producer/multi-consumer queue of size 1
 #[derive(Debug)]
-pub struct Channel<T: Send>(Arc<Shared<T>>);
+pub struct Channel<T: Send + Unpin>(Arc<Shared<T>>);
 
-impl<T: Send> Clone for Channel<T> {
+impl<T: Send + Unpin> Clone for Channel<T> {
     #[inline]
     fn clone(&self) -> Self {
         Channel(Arc::clone(&self.0))
     }
 }
 
-impl<T: Send> Default for Channel<T> {
+impl<T: Send + Unpin> Default for Channel<T> {
     #[inline]
     fn default() -> Self {
         Self(Arc::new(Shared::default()))
     }
 }
 
-impl<T: Send> Channel<T> {
+impl<T: Send + Unpin> Channel<T> {
     /// Create a new channel.
     #[inline]
     pub fn new() -> Self {
@@ -206,71 +201,58 @@ impl<T: Send> Channel<T> {
     }
 }
 
-impl<T: Send> Future for Channel<T> {
+impl<T: Send + Unpin> Future for Channel<T> {
     type Output = T;
 
     #[inline]
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self;
+    fn poll(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Self::Output> {
+        let this = &mut self.as_mut().0;
         let waker = cx.waker();
-        this.0.mutex.lock();
-        let output = {
-            if let Some(output) = unsafe { (*this.0.data.get()).data.take() } {
-                for waker in unsafe { (*this.0.data.get()).wake.drain(..) } {
+        this.mutex.with(|| {
+            if let Some(output) = unsafe { (*this.data.get()).data.take() } {
+                for waker in unsafe { (*this.data.get()).wake.drain(..) } {
                     waker.wake();
                 }
                 Ready(output)
             } else {
-                unsafe { (*this.0.data.get()).wake.push(waker.clone()) };
+                unsafe { (*this.data.get()).wake.push(waker.clone()) };
                 Pending
             }
-        };
-        this.0.mutex.unlock();
-        output
+        })
     }
 }
 
 /// A message in the process of being sent over a [`Channel`].
 #[derive(Debug)]
-pub struct Message<T: Send>(Channel<T>, Option<T>);
-
-impl<T: Send> Message<T> {
-    #[inline(always)]
-    fn pin_get_data(self: Pin<&mut Self>) -> Pin<&mut Option<T>> {
-        // This is okay because `1` is pinned when `self` is.
-        unsafe { self.map_unchecked_mut(|s| &mut s.1) }
-    }
-}
+pub struct Message<T: Send + Unpin>(Channel<T>, Option<T>);
 
 impl<T: Send + Unpin> Future for Message<T> {
     type Output = ();
 
     #[inline]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut this = self;
+        let this = self.get_mut();
         let waker = cx.waker();
-        this.0 .0.mutex.lock();
-        let output = {
-            if unsafe { (*this.0 .0.data.get()).data.is_none() } {
-                unsafe {
-                    (*this.0 .0.data.get()).data =
-                        this.as_mut().pin_get_data().get_mut().take()
-                };
-                for waker in unsafe { (*this.0 .0.data.get()).wake.drain(..) } {
+        this.0 .0.mutex.with(|| {
+            let lock = unsafe { &mut (*this.0 .0.data.get()) };
+            if lock.data.is_none() {
+                lock.data = this.1.take();
+                for waker in lock.wake.drain(..) {
                     waker.wake();
                 }
                 Ready(())
             } else {
-                unsafe { (*this.0 .0.data.get()).wake.push(waker.clone()) };
+                lock.wake.push(waker.clone());
                 Pending
             }
-        };
-        this.0 .0.mutex.unlock();
-        output
+        })
     }
 }
 
-impl<T: Send> Drop for Message<T> {
+impl<T: Send + Unpin> Drop for Message<T> {
     fn drop(&mut self) {
         if self.1.is_some() {
             panic!("Message dropped without sending");
