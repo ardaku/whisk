@@ -104,21 +104,23 @@ use core::{
     },
 };
 
+/// A spinlock
 #[derive(Debug, Default)]
-struct Mutex {
+struct Spin<T: Default> {
     flag: AtomicBool,
+    data: UnsafeCell<T>,
 }
 
-impl Mutex {
+impl<T: Default> Spin<T> {
     #[inline(always)]
-    fn with<O>(&self, then: impl FnOnce() -> O) -> O {
+    fn with<O>(&self, then: impl FnOnce(&mut T) -> O) -> O {
         while self
             .flag
             .compare_exchange_weak(false, true, Relaxed, Relaxed)
             .is_err()
         {}
         atomic::fence(Acquire);
-        let output = then();
+        let output = then(unsafe { &mut *self.data.get() });
         self.flag.store(false, Release);
         output
     }
@@ -142,20 +144,9 @@ impl<T: Send> Default for Locked<T> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct Shared<T: Send> {
-    data: UnsafeCell<Locked<T>>,
-    mutex: Mutex,
-}
-
-impl<T: Send> Default for Shared<T> {
-    #[inline]
-    fn default() -> Self {
-        let data = UnsafeCell::new(Locked::default());
-        let mutex = Mutex::default();
-
-        Shared { data, mutex }
-    }
+    spin: Spin<Locked<T>>,
 }
 
 unsafe impl<T: Send> Send for Shared<T> {}
@@ -177,7 +168,9 @@ impl<T: Send + Unpin> Clone for Channel<T> {
 impl<T: Send + Unpin> Default for Channel<T> {
     #[inline]
     fn default() -> Self {
-        Self(Arc::new(Shared::default()))
+        Self(Arc::new(Shared {
+            spin: Spin::default(),
+        }))
     }
 }
 
@@ -211,14 +204,14 @@ impl<T: Send + Unpin> Future for Channel<T> {
     ) -> Poll<Self::Output> {
         let this = &mut self.as_mut().0;
         let waker = cx.waker();
-        this.mutex.with(|| {
-            if let Some(output) = unsafe { (*this.data.get()).data.take() } {
-                for waker in unsafe { (*this.data.get()).wake.drain(..) } {
+        this.spin.with(|shared| {
+            if let Some(output) = shared.data.take() {
+                for waker in shared.wake.drain(..) {
                     waker.wake();
                 }
                 Ready(output)
             } else {
-                unsafe { (*this.data.get()).wake.push(waker.clone()) };
+                shared.wake.push(waker.clone());
                 Pending
             }
         })
@@ -236,16 +229,15 @@ impl<T: Send + Unpin> Future for Message<T> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         let waker = cx.waker();
-        this.0 .0.mutex.with(|| {
-            let lock = unsafe { &mut (*this.0 .0.data.get()) };
-            if lock.data.is_none() {
-                lock.data = this.1.take();
-                for waker in lock.wake.drain(..) {
+        this.0 .0.spin.with(|shared| {
+            if shared.data.is_none() {
+                shared.data = this.1.take();
+                for waker in shared.wake.drain(..) {
                     waker.wake();
                 }
                 Ready(())
             } else {
-                lock.wake.push(waker.clone());
+                shared.wake.push(waker.clone());
                 Pending
             }
         })
