@@ -15,7 +15,7 @@
 //!     Add(u32, u32, Channel<u32>),
 //! }
 //!
-//! async fn worker_main(channel: Channel<Option<Cmd>>) {
+//! async fn worker_main(mut channel: Channel<Option<Cmd>>) {
 //!     while let Some(command) = channel.recv().await {
 //!         println!("Worker receiving command");
 //!         match command {
@@ -252,8 +252,8 @@ impl<T: Send + Unpin, const S: usize, const R: usize> Channel<T, S, R> {
 
     /// Receive a message from this channel.
     #[inline(always)]
-    pub async fn recv(&self) -> T {
-        self.clone().await
+    pub async fn recv(&mut self) -> T {
+        self.await
     }
 }
 

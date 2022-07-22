@@ -5,7 +5,7 @@ enum Cmd {
     Add(u32, u32, Channel<u32>),
 }
 
-async fn worker_main(channel: Channel<Option<Cmd>>) {
+async fn worker_main(mut channel: Channel<Option<Cmd>>) {
     while let Some(command) = channel.recv().await {
         println!("Worker receiving command");
         match command {
@@ -31,7 +31,7 @@ async fn tasker_main() {
     };
 
     // Do an addition
-    let oneshot = Channel::new();
+    let mut oneshot = Channel::new();
     for _ in 0..32 {
         println!("Sending command…");
         channel.send(Some(Cmd::Add(43, 400, oneshot.clone()))).await;

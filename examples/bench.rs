@@ -9,7 +9,7 @@ enum Cmd {
     Cos(f32, Channel<f32>),
 }
 
-async fn worker(channel: Channel<Option<Cmd>>) {
+async fn worker(mut channel: Channel<Option<Cmd>>) {
     while let Some(command) = channel.recv().await {
         match command {
             Cmd::Cos(a, s) => s.send(libm::cosf(a)).await,
@@ -35,7 +35,7 @@ async fn tasker_multi() {
     });
     let worker = chan;
 
-    let channel = Channel::new();
+    let mut channel = Channel::new();
     for _ in 1..=1024 {
         worker.send(Some(Cmd::Cos(750.0, channel.clone()))).await;
         channel.recv().await;
@@ -67,7 +67,7 @@ async fn tasker_single(executor: &Executor) {
     });
     let worker = chan;
 
-    let channel = Channel::new();
+    let mut channel = Channel::new();
     for _ in 1..=1024 {
         worker.send(Some(Cmd::Cos(750.0, channel.clone()))).await;
         channel.recv().await;
@@ -82,7 +82,7 @@ async fn tasker_single(executor: &Executor) {
 
     // Tell worker to stop
     worker.send(None).await;
-    join.recv().await;
+    join.await;
 }
 
 async fn flume_multi() {
@@ -93,7 +93,7 @@ async fn flume_multi() {
             .spawn(Box::pin(async move { worker_flume(tasker).await }))
     });
 
-    let channel = Channel::new();
+    let mut channel = Channel::new();
     for _ in 1..=1024 {
         worker
             .send_async(Cmd::Cos(750.0, channel.clone()))
@@ -129,7 +129,7 @@ async fn flume_single(executor: &Executor) {
         })
     });
 
-    let channel = Channel::new();
+    let mut channel = Channel::new();
     for _ in 1..=1024 {
         worker
             .send_async(Cmd::Cos(750.0, channel.clone()))
