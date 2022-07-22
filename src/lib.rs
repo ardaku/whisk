@@ -1,6 +1,6 @@
 //! #### Simple and fast async channels
-//! Whisk provides oneshot-rendezvous and spsc channels that can be used to
-//! implement futures, streams, notifiers, and actors.
+//! Simple and fast async channels that can be used to implement futures,
+//! streams, notifiers, and actors.
 //!
 //! # Optional Features
 //! The `std` feature is enabled by default, disable it to use on **no_std**.
@@ -8,56 +8,59 @@
 //! # Getting Started
 //!
 //! ```rust
-//! use whisk::{Channel, Sender, Tasker, Worker};
+//! use whisk::Channel;
 //!
 //! enum Cmd {
 //!     /// Tell messenger to add
-//!     Add(u32, u32, Sender<u32>),
+//!     Add(u32, u32, Channel<u32>),
 //! }
 //!
-//! async fn worker(tasker: Tasker<Cmd>) {
-//!     while let Some(command) = tasker.recv_next().await {
+//! async fn worker_main(mut channel: Channel<Option<Cmd>>) {
+//!     while let Some(command) = channel.recv().await {
 //!         println!("Worker receiving command");
 //!         match command {
-//!             Cmd::Add(a, b, s) => s.send(a + b).await,
+//!             Cmd::Add(a, b, s) => {
+//!                 s.send(a + b).await;
+//!             }
 //!         }
 //!     }
 //!
 //!     println!("Worker stopping…");
 //! }
 //!
-//! async fn tasker() {
+//! async fn tasker_main() {
 //!     // Create worker on new thread
 //!     println!("Spawning worker…");
-//!     let mut worker_thread = None;
-//!     let worker = Worker::new(|tasker| {
-//!         worker_thread = Some(std::thread::spawn(move || {
+//!     let channel = Channel::new();
+//!     let worker_thread = {
+//!         let channel = channel.clone();
+//!         std::thread::spawn(move || {
 //!             pasts::Executor::default()
-//!                 .spawn(Box::pin(async move { worker(tasker).await }))
-//!         }));
-//!     });
+//!                 .spawn(Box::pin(async move { worker_main(channel).await }))
+//!         })
+//!     };
 //!
 //!     // Do an addition
 //!     println!("Sending command…");
-//!     let (send, recv) = Channel::pair();
-//!     worker.send(Cmd::Add(43, 400, send)).await;
+//!     let oneshot = Channel::new();
+//!     channel.send(Some(Cmd::Add(43, 400, oneshot.clone()))).await;
 //!     println!("Receiving response…");
-//!     let response = recv.recv().await;
+//!     let response = oneshot.await;
 //!     assert_eq!(response, 443);
 //!
 //!     // Tell worker to stop
 //!     println!("Stopping worker…");
-//!     worker.stop().await;
+//!     channel.send(None).await;
 //!     println!("Waiting for worker to stop…");
 //!
-//!     worker_thread.unwrap().join().unwrap();
+//!     worker_thread.join().unwrap();
 //!     println!("Worker thread joined");
 //! }
 //!
 //! # #[ntest::timeout(1000)]
 //! // Call into executor of your choice
 //! fn main() {
-//!     pasts::Executor::default().spawn(Box::pin(tasker()))
+//!     pasts::Executor::default().spawn(Box::pin(tasker_main()))
 //! }
 //! ```
 
@@ -82,366 +85,285 @@
     unused_qualifications,
     variant_size_differences
 )]
+#![deny(unsafe_code)]
 
 extern crate alloc;
-#[cfg(feature = "std")]
-extern crate std;
 
-use alloc::boxed::Box;
+use alloc::sync::Arc;
 use core::{
+    cell::UnsafeCell,
     future::Future,
-    marker::PhantomData,
-    mem::{self, MaybeUninit, ManuallyDrop},
+    mem::MaybeUninit,
     pin::Pin,
-    ptr::{self, NonNull},
     sync::atomic::{
-        AtomicBool, AtomicPtr,
-        Ordering::{Acquire, Release},
+        self, AtomicBool,
+        Ordering::{Acquire, Relaxed, Release},
     },
     task::{
-        Context, Poll,
-        Poll::{Pending, Ready},
+        Context,
+        Poll::{self, Pending, Ready},
         Waker,
     },
 };
 
-mod seal {
-    use core::marker::PhantomData;
+#[allow(unsafe_code)]
+mod list {
+    use super::*;
 
-    #[derive(Default, Debug)]
-    pub struct For<T>(PhantomData<*mut T>);
+    /// A list
+    #[derive(Debug)]
+    pub(super) struct List<T, const N: usize> {
+        data: [MaybeUninit<T>; N],
+        size: usize,
+    }
 
-    impl<T> For<T> {
+    impl<T, const N: usize> List<T, N> {
         #[inline]
         pub(super) fn new() -> Self {
-            For(PhantomData)
+            let data = unsafe {
+                MaybeUninit::<[MaybeUninit<T>; N]>::uninit().assume_init()
+            };
+            let size = 0;
+
+            Self { data, size }
+        }
+
+        #[inline(always)]
+        pub(super) fn push(&mut self, item: T, idx: usize) -> usize {
+            let idx = if idx == usize::MAX { self.size } else { idx };
+            self.data[idx] = MaybeUninit::new(item);
+            self.size += 1;
+            idx
+        }
+
+        #[inline(always)]
+        pub(super) fn drain(&mut self) -> impl Iterator<Item = T> + '_ {
+            let mut size = 0;
+            (size, self.size) = (self.size, size);
+            self.data
+                .iter()
+                .take(size)
+                .map(|t| unsafe { t.assume_init_read() })
         }
     }
 }
 
-use seal::For;
+#[allow(unsafe_code)]
+mod spin {
+    use super::*;
 
-/// Sends a single message (oneshot-rendezvous channel)
-///
-/// Created from a [`Channel`] context.
-#[derive(Debug)]
-#[must_use = "Sender should send a message before being dropped"]
-pub struct Sender<T: Send + Unpin, U = For<T>> {
-    channel: NonNull<Channel>,
-    message: ManuallyDrop<U>,
-    _for: For<T>,
-}
+    /// A spinlock
+    #[derive(Debug, Default)]
+    pub(super) struct Spin<T: Default> {
+        flag: AtomicBool,
+        data: UnsafeCell<T>,
+    }
 
-unsafe impl<T: Send + Unpin> Send for Sender<T> {}
-
-impl<T: Send + Unpin> Sender<T> {
-    /// Send a message
-    #[inline]
-    pub(crate) async fn send_and_reuse(&self, mut message: T) {
-        let ptr: *mut _ = &mut message;
-
-        unsafe {
-            let mut msg = ptr::null_mut();
-            for _ in 0..8 {
-                msg =
-                    (*self.channel.as_ptr()).msg.swap(ptr::null_mut(), Acquire);
-                if !msg.is_null() {
-                    break;
-                }
+    impl<T: Default> Spin<T> {
+        #[inline(always)]
+        pub(super) fn with<O>(&self, then: impl FnOnce(&mut T) -> O) -> O {
+            while self
+                .flag
+                .compare_exchange_weak(false, true, Relaxed, Relaxed)
+                .is_err()
+            {
                 core::hint::spin_loop();
             }
-
-            // Wait until receive requested
-            if msg.is_null() {
-                Sender { channel: self.channel, message: ManuallyDrop::new(message), _for: For::new() }.await;
-            } else {
-                // Send data
-                *msg.cast() = message;
-            }
-
-            // Read waker before allowing to be free'd
-            let waker = (*self.channel.as_ptr()).waker.take();
-
-            // Release lock (pointer unused)
-            (*self.channel.as_ptr()).msg.store(ptr.cast(), Release);
-
-            // Wake Receiver
-            if let Some(waker) = waker {
-                waker.wake();
-            }
+            atomic::fence(Acquire);
+            let output = then(unsafe { &mut *self.data.get() });
+            self.flag.store(false, Release);
+            output
         }
     }
 
-    /// Send a message
-    #[inline]
-    pub async fn send(self, message: T) {
-        self.send_and_reuse(message).await;
-    }
+    unsafe impl<T: Default + Send> Send for Spin<T> {}
+    unsafe impl<T: Default + Send> Sync for Spin<T> {}
 }
 
-impl<T: Send + Unpin> Sender<T, T> {
-    #[inline]
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        let channel = self.channel.as_ptr();
-
-        unsafe {
-            // Lock other waker
-            while (*channel).lock.swap(true, Acquire) {
-                core::hint::spin_loop();
-            }
-
-            // Check ready status
-            let ptr = (*channel).msg.swap(ptr::null_mut(), Acquire);
-            let pending = ptr.is_null();
-
-            // Set other waker
-            let waker = cx.waker().clone();
-            (*channel).other = pending.then(move || waker);
-
-            // Release lock on other waker
-            (*channel).lock.store(false, Release);
-
-            if pending {
-                return Pending;
-            }
-
-            *ptr.cast() = ManuallyDrop::take(&mut self.message);
-            Ready(())
-        }
-    }
-}
-
-impl<T: Send + Unpin> Future for Sender<T, T> {
-    type Output = ();
-
-    #[inline]
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        self.poll_next(cx)
-    }
-}
-
-/// Receives a single message (oneshot-rendezvous channel)
-///
-/// Created from a [`Channel`] context.
 #[derive(Debug)]
-#[must_use = "Receiver must receive a message before being dropped"]
-pub struct Receiver<T: Send + Unpin>(NonNull<Channel>, PhantomData<*mut T>);
+struct Locked<T: Send, const S: usize, const R: usize> {
+    /// Receive wakers
+    recv: list::List<Waker, R>,
+    /// Send wakers
+    send: list::List<Waker, S>,
+    /// Data in transit
+    data: Option<T>,
+}
 
-unsafe impl<T: Send + Unpin> Send for Receiver<T> {}
-
-impl<T: Send + Unpin> Receiver<T> {
+impl<T: Send, const S: usize, const R: usize> Default for Locked<T, S, R> {
     #[inline]
-    pub(crate) unsafe fn unuse(self) {
-        Box::from_raw(self.0.as_ptr());
-        mem::forget(self);
-    }
+    fn default() -> Self {
+        let data = None;
+        let send = list::List::new();
+        let recv = list::List::new();
 
-    #[inline]
-    pub(crate) async fn recv_and_reuse(&self) -> T {
-        let clone = Receiver(self.0, PhantomData);
-        let (val, chan) = clone.recv_chan().await;
-        core::mem::forget(chan);
-        val
-    }
-
-    /// Consume the receiver and receive the message
-    #[inline]
-    pub async fn recv(self) -> T {
-        self.recv_chan().await.0
-    }
-
-    /// Consume the receiver and receive the message, plus the channel.
-    #[inline]
-    pub async fn recv_chan(self) -> (T, Box<Channel>) {
-        let mut output = MaybeUninit::<T>::uninit();
-
-        let future = Fut(self.0, output.as_mut_ptr().cast());
-        // Release receiver lock
-        unsafe {
-            (*self.0.as_ptr()).msg.store(future.1, Release);
-        }
-        // Wait
-        let chan = future.await;
-        // Forget
-        mem::forget(self);
-        // Can safely assume init
-        unsafe { (output.assume_init(), chan) }
+        Self { data, send, recv }
     }
 }
 
-impl<T: Send + Unpin> Drop for Receiver<T> {
+#[derive(Debug, Default)]
+struct Shared<T: Send, const S: usize, const R: usize> {
+    spin: spin::Spin<Locked<T, S, R>>,
+}
+
+/// A `Channel` notifies when another `Channel` sends a message.
+///
+/// Implemented as a multi-producer/multi-consumer queue of size 1.
+///
+/// Const generic `S` is the upper bound on the number of channels that can be
+/// sending at once (doesn't include inactive channels).
+///
+/// Const generic `R` is the upper bound on the number of channels that can be
+/// receiving at once (doesn't include inactive channels).
+///
+/// Enable the **`futures-core`** feature for `Channel` to implement
+/// [`Stream`](futures_core::Stream).
+///
+/// Enable the **`pasts`** feature for `Channel` to implement
+/// [`Notifier`](pasts::Notifier).
+#[derive(Debug)]
+pub struct Channel<T: Send + Unpin, const S: usize = 1, const R: usize = 1>(
+    Arc<Shared<T, S, R>>,
+    usize,
+);
+
+impl<T, const S: usize, const R: usize> Clone for Channel<T, S, R>
+where
+    T: Send + Unpin,
+{
     #[inline]
-    fn drop(&mut self) {
-        panic!("Receiver dropped without receiving");
+    fn clone(&self) -> Self {
+        Channel(Arc::clone(&self.0), usize::MAX)
     }
 }
 
-struct Fut(NonNull<Channel>, *mut ());
+impl<T, const S: usize, const R: usize> Default for Channel<T, S, R>
+where
+    T: Send + Unpin,
+{
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
-impl Future for Fut {
-    type Output = Box<Channel>;
+impl<T: Send + Unpin, const S: usize, const R: usize> Channel<T, S, R> {
+    /// Create a new channel.
+    #[inline]
+    pub fn new() -> Self {
+        let spin = spin::Spin::default();
+
+        Self(Arc::new(Shared { spin }), usize::MAX)
+    }
+
+    /// Send a message on this channel.
+    #[inline(always)]
+    pub fn send(&self, message: T) -> Message<T, S, R> {
+        let mut chan = (*self).clone();
+        chan.1 = usize::MAX;
+        Message(chan, Some(message))
+    }
+
+    /// Receive a message from this channel.
+    #[inline(always)]
+    pub async fn recv(&mut self) -> T {
+        self.await
+    }
+}
+
+impl<T, const S: usize, const R: usize> Future for Channel<T, S, R>
+where
+    T: Send + Unpin,
+{
+    type Output = T;
 
     #[inline]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        unsafe {
-            // If already locked by sender, spinlock until send complete.
-            let addr = loop {
-                let p = (*self.0.as_ptr()).msg.swap(ptr::null_mut(), Acquire);
-                if !p.is_null() {
-                    break p;
+        let this = self.get_mut();
+        let waker = cx.waker();
+        this.0.spin.with(|shared| {
+            if let Some(output) = shared.data.take() {
+                for waker in shared.send.drain() {
+                    waker.wake();
                 }
-                core::hint::spin_loop();
-            };
-
-            if addr == self.1 {
-                // Write has not completed, update waker
-                (*self.0.as_ptr()).waker = Some(cx.waker().clone());
-
-                // Release spinlock
-                (*self.0.as_ptr()).msg.store(addr, Release);
-
-                // Lock other waker
-                while (*self.0.as_ptr()).lock.swap(true, Acquire) {
-                    core::hint::spin_loop();
-                }
-
-                // Wake other waker
-                if let Some(w) = (*self.0.as_ptr()).other.take() {
-                    w.wake()
-                }
-
-                // Release lock on other waker
-                (*self.0.as_ptr()).lock.store(false, Release);
-
-                Pending
+                Ready(output)
             } else {
-                // Write is complete, can safely assume init
-                Ready(Box::from_raw(self.0.as_ptr()))
+                this.1 = shared.recv.push(waker.clone(), this.1);
+                Pending
             }
-        }
+        })
     }
 }
 
-/// Channel context
+#[cfg(feature = "pasts")]
+impl<T, const S: usize, const R: usize> pasts::Notifier for Channel<T, S, R>
+where
+    T: Send + Unpin,
+{
+    type Event = T;
+
+    #[inline(always)]
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<T> {
+        self.poll(cx)
+    }
+}
+
+#[cfg(feature = "futures-core")]
+impl<T, const S: usize, const R: usize> futures_core::Stream
+    for Channel<Option<T>, S, R>
+where
+    T: Send + Unpin,
+{
+    type Item = T;
+
+    #[inline(always)]
+    fn poll_next(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        self.poll(cx)
+    }
+}
+
+/// A message in the process of being sent over a [`Channel`].
 #[derive(Debug)]
-pub struct Channel {
-    waker: Option<Waker>,
-    other: Option<Waker>,
-    msg: AtomicPtr<()>,
-    lock: AtomicBool,
-}
+pub struct Message<T: Send + Unpin, const S: usize, const R: usize>(
+    Channel<T, S, R>,
+    Option<T>,
+);
 
-unsafe impl Send for Channel {}
+impl<T, const S: usize, const R: usize> Future for Message<T, S, R>
+where
+    T: Send + Unpin,
+{
+    type Output = ();
 
-impl Channel {
-    /// Create an asynchronous oneshot-rendezvous channel
     #[inline]
-    pub fn pair<T: Send + Unpin>() -> (Sender<T>, Receiver<T>) {
-        let channel = Self {
-            waker: None,
-            other: None,
-            msg: ptr::null_mut::<()>().into(),
-            lock: false.into(),
-        };
-        let channel = Box::leak(Box::new(channel)).into();
-
-        (
-            Sender {
-                channel,
-                message: ManuallyDrop::new(For::new()),
-                _for: For::new(),
-            },
-            Receiver(channel, PhantomData),
-        )
-    }
-
-    /// Reuse the context to avoid extra allocation
-    #[inline]
-    pub fn to_pair<T: Send + Unpin>(self: Box<Self>) -> (Sender<T>, Receiver<T>) {
-        let channel = Box::leak(self).into();
-
-        (
-            Sender {
-                channel,
-                message: ManuallyDrop::new(For::new()),
-                _for: For::new(),
-            },
-            Receiver(channel, PhantomData),
-        )
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        let waker = cx.waker();
+        this.0 .0.spin.with(|shared| {
+            if shared.data.is_none() {
+                shared.data = this.1.take();
+                for waker in shared.recv.drain() {
+                    waker.wake();
+                }
+                Ready(())
+            } else {
+                this.0 .1 = shared.send.push(waker.clone(), this.0 .1);
+                Pending
+            }
+        })
     }
 }
 
-/// Handle to a worker - command consumer (spsc-rendezvous channel)
-#[derive(Debug)]
-pub struct Worker<T: Send + Unpin>(Sender<Option<T>>);
-
-impl<T: Send + Unpin> Worker<T> {
-    /// Start up a worker (similar to the actor concept).
-    #[inline]
-    pub fn new(cb: impl FnOnce(Tasker<T>)) -> Self {
-        let (sender, receiver) = Channel::pair();
-
-        // Launch worker
-        cb(Tasker(core::cell::Cell::new(Some(receiver))));
-
-        // Return worker handle
-        Self(sender)
-    }
-
-    /// Send a command to the worker.
-    #[inline]
-    pub async fn send(&self, cmd: T) {
-        self.0.send_and_reuse(Some(cmd)).await;
-    }
-
-    /// Stop the worker.
-    #[inline]
-    pub async fn stop(self) {
-        self.0.send_and_reuse(None).await;
-        core::mem::forget(self);
-    }
-}
-
-impl<T: Send + Unpin> Drop for Worker<T> {
-    #[inline]
+impl<T, const S: usize, const R: usize> Drop for Message<T, S, R>
+where
+    T: Send + Unpin,
+{
     fn drop(&mut self) {
-        panic!("Worker dropped without stopping");
-    }
-}
-
-/// Handle to a tasker - command producer (spsc-rendezvous channel)
-pub struct Tasker<T: Send + Unpin>(core::cell::Cell<Option<Receiver<Option<T>>>>);
-
-impl<T: Send + core::fmt::Debug + Unpin> core::fmt::Debug for Tasker<T> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let tmp = self.0.take();
-        f.debug_struct("Foo").field("0", &tmp).finish()?;
-        self.0.set(tmp);
-        Ok(())
-    }
-}
-
-impl<T: Send + Unpin> Tasker<T> {
-    /// Get the next command from the tasker, returns [`None`] on stop
-    #[inline]
-    pub async fn recv_next(&self) -> Option<T> {
-        let recver = self.0.replace(None)?;
-
-        if let Some(value) = recver.recv_and_reuse().await {
-            self.0.set(Some(recver));
-            Some(value)
-        } else {
-            unsafe { recver.unuse() };
-            None
-        }
-    }
-}
-
-impl<T: Send + Unpin> Drop for Tasker<T> {
-    #[inline]
-    fn drop(&mut self) {
-        if self.0.take().is_some() {
-            panic!("Tasker dropped before Worker");
+        if self.1.is_some() {
+            panic!("Message dropped without sending");
         }
     }
 }
