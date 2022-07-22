@@ -4,6 +4,29 @@ All notable changes to `whisk` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://github.com/AldaronLau/semver).
 
+## [0.4.0] - 2022-07-22
+### Added
+ - **`pasts`** feature for `Channel<T>` to implement `Notifier`
+ - **`futures-core`** feature for `Channel<Option<T>>` to implement `Stream`
+ - `Message` future type
+ - `Channel::new()` for creating a channel
+ - `Channel::send()` for sending a message on a channel
+ - `Channel::recv()` for receiving a message from a channel
+
+### Changed
+ - Channels are now MPMC instead of SPSC
+ - Less unsafe code, simpler implementation
+ - Channels are now symmetrical
+
+### Removed
+ - `Sender` - Functionality built into `Channel` now
+ - `Receiver` - Functionality built into `Message` now
+ - `Worker` - Functionality built into `Message` now
+ - `Tasker` - Functionality built into `Channel` now
+ - **`std`** feature
+ - `Channel::to_pair()` - Use `Channel::new()` instead
+ - `Channel::pair()` - Use `Channel::new()` instead
+
 ## [0.3.0] - 2022-07-10
 ### Added
  - `Channel` struct, and `Channel::to_pair()` for reusing oneshot channels
