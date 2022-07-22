@@ -166,7 +166,9 @@ mod spin {
                 .flag
                 .compare_exchange_weak(false, true, Relaxed, Relaxed)
                 .is_err()
-            {}
+            {
+                core::hint::spin_loop();
+            }
             atomic::fence(Acquire);
             let output = then(unsafe { &mut *self.data.get() });
             self.flag.store(false, Release);
@@ -206,7 +208,13 @@ struct Shared<T: Send, const S: usize, const R: usize> {
 
 /// A `Channel` notifies when another `Channel` sends a message.
 ///
-/// Implemented as a multi-producer/multi-consumer queue of size 1
+/// Implemented as a multi-producer/multi-consumer queue of size 1.
+///
+/// Const generic `S` is the upper bound on the number of channels that can be
+/// sending at once (doesn't include inactive channels).
+///
+/// Const generic `R` is the upper bound on the number of channels that can be
+/// receiving at once (doesn't include inactive channels).
 #[derive(Debug)]
 pub struct Channel<T: Send + Unpin, const S: usize = 1, const R: usize = 1>(
     Arc<Shared<T, S, R>>,
