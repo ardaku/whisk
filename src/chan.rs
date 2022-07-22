@@ -14,21 +14,14 @@ use core::{
 };
 
 // Copied from https://doc.rust-lang.org/core/sync/atomic/fn.fence.html#examples
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct Mutex {
     flag: AtomicBool,
 }
 
 impl Mutex {
-    #[inline]
-    pub fn new() -> Mutex {
-        Mutex {
-            flag: AtomicBool::new(false),
-        }
-    }
-
     #[inline(always)]
-    pub fn lock(&self) {
+    fn lock(&self) {
         // Wait until the old value is `false`.
         while self
             .flag
@@ -40,7 +33,7 @@ impl Mutex {
     }
 
     #[inline(always)]
-    pub fn unlock(&self) {
+    fn unlock(&self) {
         self.flag.store(false, Release);
     }
 }
@@ -73,7 +66,7 @@ impl<T: Send> Default for Shared<T> {
     #[inline]
     fn default() -> Self {
         let data = UnsafeCell::new(Locked::default());
-        let mutex = Mutex::new();
+        let mutex = Mutex::default();
 
         Shared { data, mutex }
     }
@@ -131,7 +124,7 @@ impl<T: Send> Future for Channel<T> {
 
     #[inline]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut this = self;
+        let this = self;
         let waker = cx.waker();
         this.0.mutex.lock();
         let output = {
@@ -207,12 +200,12 @@ impl<T: Send> Future for Message<T> {
 impl<T: Send> Drop for Message<T> {
     fn drop(&mut self) {
         self.0.0.mutex.lock();
-        let output = {
+        {
             let shared = unsafe { &mut *self.0.0.data.get() };
             if !self.2 || !shared.addr.is_null() {
                 panic!("Message dropped without sending");
             }
-        };
+        }
         self.0.0.mutex.unlock();
     }
 }
