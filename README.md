@@ -10,7 +10,7 @@
 
 #### Simple and fast async channels
 Simple and fast async channels that can be used to implement futures, streams,
-notifiers, and actors.  Whisk is purposely kept small, implemented in under 500
+notifiers, and actors.  Whisk is purposely kept small, implemented in under 250
 lines of code - and also works on `no_std`!
 
 ## MSRV
