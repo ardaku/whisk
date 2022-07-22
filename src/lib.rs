@@ -89,10 +89,11 @@
 
 extern crate alloc;
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::sync::Arc;
 use core::{
     cell::UnsafeCell,
     future::Future,
+    mem::MaybeUninit,
     pin::Pin,
     sync::atomic::{
         self, AtomicBool,
@@ -104,6 +105,48 @@ use core::{
         Waker,
     },
 };
+
+#[allow(unsafe_code)]
+mod list {
+    use super::*;
+
+    /// A list
+    #[derive(Debug)]
+    pub(super) struct List<T, const N: usize> {
+        data: [MaybeUninit<T>; N],
+        size: usize,
+    }
+
+    impl<T, const N: usize> List<T, N> {
+        #[inline]
+        pub(super) fn new() -> Self {
+            let data = unsafe {
+                MaybeUninit::<[MaybeUninit<T>; N]>::uninit().assume_init()
+            };
+            let size = 0;
+
+            Self { data, size }
+        }
+
+        #[inline(always)]
+        pub(super) fn push(&mut self, item: T, idx: usize) -> usize {
+            let idx = if idx == usize::MAX { self.size } else { idx };
+            self.data[idx] = MaybeUninit::new(item);
+            self.size += 1;
+            idx
+        }
+
+        #[inline(always)]
+        pub(super) fn drain(&mut self) -> impl Iterator<Item = T> + '_ {
+            let mut size = 0;
+            (size, self.size) = (self.size, size);
+            self.data
+                .iter()
+                .take(size)
+                .map(|t| unsafe { t.assume_init_read() })
+        }
+    }
+}
 
 #[allow(unsafe_code)]
 mod spin {
@@ -136,61 +179,75 @@ mod spin {
 }
 
 #[derive(Debug)]
-struct Locked<T: Send> {
+struct Locked<T: Send, const S: usize, const R: usize> {
+    /// Receive wakers
+    recv: list::List<Waker, R>,
+    /// Send wakers
+    send: list::List<Waker, S>,
     /// Data in transit
     data: Option<T>,
-    /// Wakers
-    wake: Vec<Waker>,
 }
 
-impl<T: Send> Default for Locked<T> {
+impl<T: Send, const S: usize, const R: usize> Default for Locked<T, S, R> {
     #[inline]
     fn default() -> Self {
         let data = None;
-        let wake = Vec::new();
+        let send = list::List::new();
+        let recv = list::List::new();
 
-        Self { data, wake }
+        Self { data, send, recv }
     }
 }
 
 #[derive(Debug, Default)]
-struct Shared<T: Send> {
-    spin: spin::Spin<Locked<T>>,
+struct Shared<T: Send, const S: usize, const R: usize> {
+    spin: spin::Spin<Locked<T, S, R>>,
 }
 
 /// A `Channel` notifies when another `Channel` sends a message.
 ///
 /// Implemented as a multi-producer/multi-consumer queue of size 1
 #[derive(Debug)]
-pub struct Channel<T: Send + Unpin>(Arc<Shared<T>>);
+pub struct Channel<T: Send + Unpin, const S: usize = 1, const R: usize = 1>(
+    Arc<Shared<T, S, R>>,
+    usize,
+);
 
-impl<T: Send + Unpin> Clone for Channel<T> {
+impl<T, const S: usize, const R: usize> Clone for Channel<T, S, R>
+where
+    T: Send + Unpin,
+{
     #[inline]
     fn clone(&self) -> Self {
-        Channel(Arc::clone(&self.0))
+        Channel(Arc::clone(&self.0), usize::MAX)
     }
 }
 
-impl<T: Send + Unpin> Default for Channel<T> {
+impl<T, const S: usize, const R: usize> Default for Channel<T, S, R>
+where
+    T: Send + Unpin,
+{
     #[inline]
     fn default() -> Self {
-        Self(Arc::new(Shared {
-            spin: spin::Spin::default(),
-        }))
+        Self::new()
     }
 }
 
-impl<T: Send + Unpin> Channel<T> {
+impl<T: Send + Unpin, const S: usize, const R: usize> Channel<T, S, R> {
     /// Create a new channel.
     #[inline]
     pub fn new() -> Self {
-        Self::default()
+        let spin = spin::Spin::default();
+
+        Self(Arc::new(Shared { spin }), usize::MAX)
     }
 
     /// Send a message on this channel.
     #[inline(always)]
-    pub fn send(&self, message: T) -> Message<T> {
-        Message((*self).clone(), Some(message))
+    pub fn send(&self, message: T) -> Message<T, S, R> {
+        let mut chan = (*self).clone();
+        chan.1 = usize::MAX;
+        Message(chan, Some(message))
     }
 
     /// Receive a message from this channel.
@@ -200,24 +257,24 @@ impl<T: Send + Unpin> Channel<T> {
     }
 }
 
-impl<T: Send + Unpin> Future for Channel<T> {
+impl<T, const S: usize, const R: usize> Future for Channel<T, S, R>
+where
+    T: Send + Unpin,
+{
     type Output = T;
 
     #[inline]
-    fn poll(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Self::Output> {
-        let this = &mut self.as_mut().0;
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
         let waker = cx.waker();
-        this.spin.with(|shared| {
+        this.0.spin.with(|shared| {
             if let Some(output) = shared.data.take() {
-                for waker in shared.wake.drain(..) {
+                for waker in shared.send.drain() {
                     waker.wake();
                 }
                 Ready(output)
             } else {
-                shared.wake.push(waker.clone());
+                this.1 = shared.recv.push(waker.clone(), this.1);
                 Pending
             }
         })
@@ -226,9 +283,15 @@ impl<T: Send + Unpin> Future for Channel<T> {
 
 /// A message in the process of being sent over a [`Channel`].
 #[derive(Debug)]
-pub struct Message<T: Send + Unpin>(Channel<T>, Option<T>);
+pub struct Message<T: Send + Unpin, const S: usize, const R: usize>(
+    Channel<T, S, R>,
+    Option<T>,
+);
 
-impl<T: Send + Unpin> Future for Message<T> {
+impl<T, const S: usize, const R: usize> Future for Message<T, S, R>
+where
+    T: Send + Unpin,
+{
     type Output = ();
 
     #[inline]
@@ -238,19 +301,22 @@ impl<T: Send + Unpin> Future for Message<T> {
         this.0 .0.spin.with(|shared| {
             if shared.data.is_none() {
                 shared.data = this.1.take();
-                for waker in shared.wake.drain(..) {
+                for waker in shared.recv.drain() {
                     waker.wake();
                 }
                 Ready(())
             } else {
-                shared.wake.push(waker.clone());
+                this.0 .1 = shared.send.push(waker.clone(), this.0 .1);
                 Pending
             }
         })
     }
 }
 
-impl<T: Send + Unpin> Drop for Message<T> {
+impl<T, const S: usize, const R: usize> Drop for Message<T, S, R>
+where
+    T: Send + Unpin,
+{
     fn drop(&mut self) {
         if self.1.is_some() {
             panic!("Message dropped without sending");
