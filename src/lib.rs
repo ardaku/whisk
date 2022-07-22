@@ -90,8 +90,6 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
-// SpinLock implementation (used for transfer of wakers)
-mod spin;
 // Channel implementation
 mod chan;
 
