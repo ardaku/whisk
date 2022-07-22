@@ -21,8 +21,11 @@ Benchmarks for v0.3.0 mpmc call on pasts runtime (compared to dynamic library):
 
 ```
 Dynamic library: 6ns
-Whisk (2-thread): 5.835µs
-Flume (2-thread): 6.051µs
-Whisk (1-thread): 281ns
-Flume (1-thread): 317ns
+Whisk (2-thread): 7.07µs
+Flume (2-thread): 7.645µs
+Whisk (1-thread): 188ns
+Flume (1-thread): 306ns
 ```
+
+These aren't very well done benchmarks, but in my testing whisk is always faster
+on single threaded and sometimes faster on the multi-threaded benchmark.
