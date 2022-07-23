@@ -3,7 +3,9 @@
 //! streams, notifiers, and actors.
 //!
 //! # Optional Features
-//! The `std` feature is enabled by default, disable it to use on **no_std**.
+//!  - **futures-core**: Implement [`Stream`](futures_core::Stream) for
+//!    [`Channel`] (generic `T` must be `Option<Item>`)
+//!  - **pasts**: Implement [`Notifier`](pasts::Notifier) for [`Channel`] 
 //!
 //! # Getting Started
 //!
@@ -217,7 +219,7 @@ struct Shared<T: Send, const S: usize, const R: usize> {
 /// receiving at once (doesn't include inactive channels).
 ///
 /// Enable the **`futures-core`** feature for `Channel` to implement
-/// [`Stream`](futures_core::Stream).
+/// [`Stream`](futures_core::Stream) (generic `T` must be `Option<Item>`).
 ///
 /// Enable the **`pasts`** feature for `Channel` to implement
 /// [`Notifier`](pasts::Notifier).

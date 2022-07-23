@@ -4,6 +4,10 @@ All notable changes to `whisk` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://github.com/AldaronLau/semver).
 
+## [0.4.1] - 2022-07-23
+### Fixed
+ - Error in documentation
+
 ## [0.4.0] - 2022-07-22
 ### Added
  - **`pasts`** feature for `Channel<T>` to implement `Notifier`
