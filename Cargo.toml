@@ -34,11 +34,11 @@ version = "0.3"
 optional = true
 
 [dependencies.pasts]
-version = "0.11"
+version = "0.12"
 optional = true
 
 [dev-dependencies]
-pasts = "0.11"
+pasts = "0.12"
 dl_api = "0.4"
 futures = "0.3"
 flume = "0.10"
