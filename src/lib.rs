@@ -91,7 +91,7 @@
 
 extern crate alloc;
 
-use alloc::sync::Arc;
+use alloc::sync::{self, Arc};
 use core::{
     cell::UnsafeCell,
     future::Future,
@@ -271,6 +271,12 @@ impl<T: Send + Unpin, const S: usize, const R: usize> Channel<T, S, R> {
     pub async fn recv(&mut self) -> T {
         self.await
     }
+
+    /// Create a new corresponding [`Weak`] channel.
+    #[inline]
+    pub fn downgrade(&self) -> Weak<T, S, R> {
+        Weak(Arc::downgrade(&self.0))
+    }
 }
 
 impl<T, const S: usize, const R: usize> Future for Channel<T, S, R>
@@ -324,6 +330,26 @@ where
         cx: &mut Context<'_>,
     ) -> Poll<Option<Self::Item>> {
         self.poll(cx)
+    }
+}
+
+/// A weak version of a `Channel`.
+#[derive(Debug, Default)]
+pub struct Weak<T: Send + Unpin, const S: usize = 1, const R: usize = 1>(
+    sync::Weak<Shared<T, S, R>>,
+);
+
+impl<T: Send + Unpin, const S: usize, const R: usize> Weak<T, S, R> {
+    /// Calling `upgrade()` will always return `None`.
+    #[inline]
+    pub fn new() -> Self {
+        Self(sync::Weak::new())
+    }
+
+    /// Attempt to upgrade the Weak channel to a [`Channel`].
+    #[inline]
+    pub fn upgrade(&self) -> Option<Channel<T, S, R>> {
+        Some(Channel(self.0.upgrade()?, usize::MAX))
     }
 }
 
