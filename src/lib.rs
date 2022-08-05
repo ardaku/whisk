@@ -5,7 +5,7 @@
 //! # Optional Features
 //!  - **futures-core**: Implement [`Stream`](futures_core::Stream) for
 //!    [`Channel`] (generic `T` must be `Option<Item>`)
-//!  - **pasts**: Implement [`Notifier`](pasts::Notifier) for [`Channel`] 
+//!  - **pasts**: Implement [`Notifier`](pasts::Notifier) for [`Channel`]
 //!
 //! # Getting Started
 //!
@@ -268,8 +268,10 @@ impl<T: Send + Unpin, const S: usize, const R: usize> Channel<T, S, R> {
 
     /// Receive a message from this channel.
     #[inline(always)]
-    pub async fn recv(&mut self) -> T {
-        self.await
+    pub fn recv(
+        &mut self,
+    ) -> impl Future<Output = T> + Send + Sync + Unpin + '_ {
+        self
     }
 
     /// Create a new corresponding [`Weak`] channel.

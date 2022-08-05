@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://github.com/AldaronLau/
 ### Added
  - `Weak` reference to a `Channel`
 
+### Changed
+ - Updated pasts to 0.12
+ - `Channel::recv()` from an `async fn` to a `fn() -> impl Future`
+ - `Channel::send()` from returning `Message` to returning `impl Future`
+
 ### Removed
  - `Message`
 
