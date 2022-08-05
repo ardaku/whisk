@@ -260,7 +260,7 @@ impl<T: Send + Unpin, const S: usize, const R: usize> Channel<T, S, R> {
 
     /// Send a message on this channel.
     #[inline(always)]
-    pub fn send(&self, message: T) -> Message<T, S, R> {
+    pub fn send(&self, message: T) -> impl Future<Output = ()> + Send + Unpin {
         let mut chan = (*self).clone();
         chan.1 = usize::MAX;
         Message(chan, Some(message))
@@ -329,7 +329,7 @@ where
 
 /// A message in the process of being sent over a [`Channel`].
 #[derive(Debug)]
-pub struct Message<T: Send + Unpin, const S: usize, const R: usize>(
+struct Message<T: Send + Unpin, const S: usize, const R: usize>(
     Channel<T, S, R>,
     Option<T>,
 );
