@@ -111,57 +111,6 @@ use core::{
 };
 
 #[allow(unsafe_code)]
-mod wake {
-    use super::*;
-
-    /// Type for waking on send or receive
-    #[derive(Default)]
-    #[repr(C)]
-    pub(super) struct Wake {
-        /// Channel waker
-        wake: Option<Waker>,
-        /// Channel unique identifier (the arc pointer casted to usize)
-        chan: usize,
-        /// Heap wakers
-        list: Vec<(usize, Waker)>,
-    }
-
-    impl Wake {
-        /// Register a waker for a channel
-        #[inline(always)]
-        pub(super) fn register(&mut self, chan: usize, waker: Waker) {
-            if let Some(wake) = self.wake.take() {
-                if self.chan == chan {
-                    (self.chan, self.wake) = (chan, Some(waker));
-                } else {
-                    self.list.extend([(self.chan, wake), (chan, waker)]);
-                }
-            } else if self.list.is_empty() {
-                (self.chan, self.wake) = (chan, Some(waker));
-            } else if let Some(wake) =
-                self.list.iter_mut().find(|w| w.0 == chan)
-            {
-                wake.1 = waker;
-            } else {
-                self.list.push((chan, waker));
-            }
-        }
-
-        /// Wake all channels and de-register all wakers
-        #[inline(always)]
-        pub(super) fn wake(&mut self) {
-            if let Some(waker) = self.wake.take() {
-                waker.wake();
-                return;
-            }
-            for waker in self.list.drain(..) {
-                waker.1.wake();
-            }
-        }
-    }
-}
-
-#[allow(unsafe_code)]
 mod spin {
     use super::*;
 
@@ -193,11 +142,55 @@ mod spin {
     unsafe impl<T: Default + Send> Sync for Spin<T> {}
 }
 
+/// Type for waking on send or receive
+#[derive(Default)]
+#[repr(C)]
+struct Wake {
+    /// Channel waker
+    wake: Option<Waker>,
+    /// Channel unique identifier (the arc pointer casted to usize)
+    chan: usize,
+    /// Heap wakers
+    list: Vec<(usize, Waker)>,
+}
+
+impl Wake {
+    /// Register a waker for a channel
+    #[inline(always)]
+    fn register(&mut self, chan: usize, waker: Waker) {
+        if let Some(wake) = self.wake.take() {
+            if self.chan == chan {
+                (self.chan, self.wake) = (chan, Some(waker));
+            } else {
+                self.list.extend([(self.chan, wake), (chan, waker)]);
+            }
+        } else if self.list.is_empty() {
+            (self.chan, self.wake) = (chan, Some(waker));
+        } else if let Some(wake) = self.list.iter_mut().find(|w| w.0 == chan) {
+            wake.1 = waker;
+        } else {
+            self.list.push((chan, waker));
+        }
+    }
+
+    /// Wake all channels and de-register all wakers
+    #[inline(always)]
+    fn wake(&mut self) {
+        if let Some(waker) = self.wake.take() {
+            waker.wake();
+            return;
+        }
+        for waker in self.list.drain(..) {
+            waker.1.wake();
+        }
+    }
+}
+
 struct Locked<T: Send> {
     /// Receive wakers
-    recv: wake::Wake,
+    recv: Wake,
     /// Send wakers
-    send: wake::Wake,
+    send: Wake,
     /// Data in transit
     data: Option<T>,
 }
@@ -206,8 +199,8 @@ impl<T: Send> Default for Locked<T> {
     #[inline]
     fn default() -> Self {
         let data = None;
-        let send = wake::Wake::default();
-        let recv = wake::Wake::default();
+        let send = Wake::default();
+        let recv = Wake::default();
 
         Self { data, send, recv }
     }
