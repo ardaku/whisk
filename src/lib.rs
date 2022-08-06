@@ -96,7 +96,7 @@ use alloc::{
     vec::Vec,
 };
 use core::{
-    cell::UnsafeCell,
+    cell::{Cell, UnsafeCell},
     future::Future,
     pin::Pin,
     sync::atomic::{
@@ -220,9 +220,9 @@ struct Shared<T: Send> {
 ///
 /// Enable the **`pasts`** feature for `Channel` to implement
 /// [`Notifier`](pasts::Notifier).
-pub struct Channel<T: Send + Unpin>(Arc<Shared<T>>);
+pub struct Channel<T: Send>(Arc<Shared<T>>);
 
-impl<T: Send + Unpin> core::fmt::Debug for Channel<T> {
+impl<T: Send> core::fmt::Debug for Channel<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Channel")
             .field("strong_count", &Arc::strong_count(&self.0))
@@ -230,21 +230,21 @@ impl<T: Send + Unpin> core::fmt::Debug for Channel<T> {
     }
 }
 
-impl<T: Send + Unpin> Clone for Channel<T> {
+impl<T: Send> Clone for Channel<T> {
     #[inline]
     fn clone(&self) -> Self {
         Self(Arc::clone(&self.0))
     }
 }
 
-impl<T: Send + Unpin> Default for Channel<T> {
+impl<T: Send> Default for Channel<T> {
     #[inline]
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T: Send + Unpin> Channel<T> {
+impl<T: Send> Channel<T> {
     /// Create a new channel.
     #[inline]
     pub fn new() -> Self {
@@ -255,8 +255,8 @@ impl<T: Send + Unpin> Channel<T> {
 
     /// Send a message on this channel.
     #[inline(always)]
-    pub fn send(&self, message: T) -> impl Future<Output = ()> + Send + Unpin {
-        Message((*self).clone(), Some(message))
+    pub fn send(&self, message: T) -> impl Future<Output = ()> + Send {
+        Message((*self).clone(), Cell::new(Some(message)))
     }
 
     /// Receive a message from this channel.
@@ -287,7 +287,7 @@ impl<T: Send + Unpin> Channel<T> {
     }
 }
 
-impl<T: Send + Unpin> Future for Channel<T> {
+impl<T: Send> Future for Channel<T> {
     type Output = T;
 
     #[inline(always)]
@@ -296,7 +296,7 @@ impl<T: Send + Unpin> Future for Channel<T> {
     }
 }
 
-impl<T: Send + Unpin> Future for &Channel<T> {
+impl<T: Send> Future for &Channel<T> {
     type Output = T;
 
     #[inline(always)]
@@ -306,7 +306,7 @@ impl<T: Send + Unpin> Future for &Channel<T> {
 }
 
 #[cfg(feature = "pasts")]
-impl<T: Send + Unpin> pasts::Notifier for Channel<T> {
+impl<T: Send> pasts::Notifier for Channel<T> {
     type Event = T;
 
     #[inline(always)]
@@ -316,7 +316,7 @@ impl<T: Send + Unpin> pasts::Notifier for Channel<T> {
 }
 
 #[cfg(feature = "pasts")]
-impl<T: Send + Unpin> pasts::Notifier for &Channel<T> {
+impl<T: Send> pasts::Notifier for &Channel<T> {
     type Event = T;
 
     #[inline(always)]
@@ -326,7 +326,7 @@ impl<T: Send + Unpin> pasts::Notifier for &Channel<T> {
 }
 
 #[cfg(feature = "futures-core")]
-impl<T: Send + Unpin> futures_core::Stream for Channel<Option<T>> {
+impl<T: Send> futures_core::Stream for Channel<Option<T>> {
     type Item = T;
 
     #[inline(always)]
@@ -339,7 +339,7 @@ impl<T: Send + Unpin> futures_core::Stream for Channel<Option<T>> {
 }
 
 #[cfg(feature = "futures-core")]
-impl<T: Send + Unpin> futures_core::Stream for &Channel<Option<T>> {
+impl<T: Send> futures_core::Stream for &Channel<Option<T>> {
     type Item = T;
 
     #[inline(always)]
@@ -352,9 +352,9 @@ impl<T: Send + Unpin> futures_core::Stream for &Channel<Option<T>> {
 }
 
 /// A weak refrence to a [`Channel`].
-pub struct Weak<T: Send + Unpin>(sync::Weak<Shared<T>>);
+pub struct Weak<T: Send>(sync::Weak<Shared<T>>);
 
-impl<T: Send + Unpin> core::fmt::Debug for Weak<T> {
+impl<T: Send> core::fmt::Debug for Weak<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Weak")
             .field("strong_count", &sync::Weak::strong_count(&self.0))
@@ -362,14 +362,14 @@ impl<T: Send + Unpin> core::fmt::Debug for Weak<T> {
     }
 }
 
-impl<T: Send + Unpin> Default for Weak<T> {
+impl<T: Send> Default for Weak<T> {
     #[inline]
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T: Send + Unpin> Weak<T> {
+impl<T: Send> Weak<T> {
     /// Calling `upgrade()` will always return `None`.
     #[inline]
     pub fn new() -> Self {
@@ -384,19 +384,28 @@ impl<T: Send + Unpin> Weak<T> {
 }
 
 /// A message in the process of being sent over a [`Channel`].
-struct Message<T: Send + Unpin>(Channel<T>, Option<T>);
+struct Message<T: Send>(Channel<T>, Cell<Option<T>>);
 
-impl<T: Send + Unpin> Future for Message<T> {
+#[allow(unsafe_code)]
+impl<T: Send> Message<T> {
+    #[inline(always)]
+    fn pin_get(self: Pin<&Self>) -> Pin<&Cell<Option<T>>> {
+        // This is okay because `1` is pinned when `self` is.
+        unsafe { self.map_unchecked(|s| &s.1) }
+    }
+}
+
+impl<T: Send> Future for Message<T> {
     type Output = ();
 
     #[inline]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.get_mut();
+        let this = Pin::new(&self).get_ref();
         let waker = cx.waker();
         let uid = Arc::as_ptr(&this.0 .0) as usize;
         this.0 .0.spin.with(|shared| {
             if shared.data.is_none() {
-                shared.data = this.1.take();
+                shared.data = this.as_ref().pin_get().take();
                 shared.recv.wake();
                 Ready(())
             } else {

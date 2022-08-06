@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://github.com/AldaronLau/
  - `Channel::recv()` from an `async fn` to a `fn() -> impl Future`
  - `Channel::send()` from returning `Message` to returning `impl Future`
  - `Channel::recv()` no longer requires a mutable reference
+ - `Channel<T>` now supports `T: !Unpin`
 
 ### Removed
  - `Message`
