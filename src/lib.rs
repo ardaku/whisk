@@ -116,11 +116,12 @@ mod wake {
 
     /// Type for waking on send or receive
     #[derive(Debug, Default)]
+    #[repr(C)]
     pub(super) struct Wake {
-        /// Channel unique identifier (the arc pointer casted to usize)
-        chan: usize,
         /// Channel waker
         wake: Option<Waker>,
+        /// Channel unique identifier (the arc pointer casted to usize)
+        chan: usize,
         /// Heap wakers
         list: Vec<(usize, Waker)>,
     }
@@ -129,22 +130,20 @@ mod wake {
         /// Register a waker for a channel
         #[inline(always)]
         pub(super) fn register(&mut self, chan: usize, waker: Waker) {
-            if self.list.is_empty() {
-                if let Some(wake) = self.wake.take() {
-                    if self.chan == chan {
-                        (self.chan, self.wake) = (chan, Some(waker));
-                    } else {
-                        self.list.extend([(self.chan, wake), (chan, waker)]);
-                    }
-                } else {
+            if let Some(wake) = self.wake.take() {
+                if self.chan == chan {
                     (self.chan, self.wake) = (chan, Some(waker));
-                }
-            } else {
-                if let Some(wake) = self.list.iter_mut().find(|w| w.0 == chan) {
-                    wake.1 = waker;
                 } else {
-                    self.list.push((chan, waker));
+                    self.list.extend([(self.chan, wake), (chan, waker)]);
                 }
+            } else if self.list.is_empty() {
+                (self.chan, self.wake) = (chan, Some(waker));
+            } else if let Some(wake) =
+                self.list.iter_mut().find(|w| w.0 == chan)
+            {
+                wake.1 = waker;
+            } else {
+                self.list.push((chan, waker));
             }
         }
 
