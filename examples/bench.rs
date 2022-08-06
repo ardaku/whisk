@@ -31,7 +31,7 @@ async fn tasker_multi() {
     let tasker = chan.clone();
     let worker_thread = std::thread::spawn(move || {
         pasts::Executor::default()
-            .spawn(Box::pin(async move { worker(tasker).await }))
+            .spawn(async move { worker(tasker).await })
     });
     let worker = chan;
 
@@ -60,10 +60,10 @@ async fn tasker_single(executor: &Executor) {
     executor.spawn({
         let tasker = chan.clone();
         let join = join.clone();
-        Box::pin(async move {
+        async move {
             worker(tasker).await;
             join.send(()).await;
-        })
+        }
     });
     let worker = chan;
 
@@ -90,7 +90,7 @@ async fn flume_multi() {
     let (worker, tasker) = flume::bounded(1);
     let worker_thread = std::thread::spawn(move || {
         pasts::Executor::default()
-            .spawn(Box::pin(async move { worker_flume(tasker).await }))
+            .spawn(async move { worker_flume(tasker).await })
     });
 
     let channel = Channel::new();
@@ -123,10 +123,10 @@ async fn flume_single(executor: &Executor) {
     let (worker, tasker) = flume::bounded(1);
     executor.spawn({
         let join = join.clone();
-        Box::pin(async move {
+        async move {
             worker_flume(tasker).await;
             join.send(()).await;
-        })
+        }
     });
 
     let channel = Channel::new();
@@ -190,5 +190,5 @@ async fn tasker(executor: Executor) {
 // Call into executor of your choice
 fn main() {
     let executor = pasts::Executor::default();
-    executor.spawn(Box::pin(tasker(executor.clone())))
+    executor.spawn(tasker(executor.clone()))
 }

@@ -26,7 +26,7 @@ async fn tasker_main() {
         let channel = channel.clone();
         std::thread::spawn(move || {
             pasts::Executor::default()
-                .spawn(Box::pin(async move { worker_main(channel).await }))
+                .spawn(async move { worker_main(channel).await })
         })
     };
 
@@ -51,5 +51,5 @@ async fn tasker_main() {
 
 // Call into executor of your choice
 fn main() {
-    pasts::Executor::default().spawn(Box::pin(tasker_main()))
+    pasts::Executor::default().spawn(tasker_main())
 }
