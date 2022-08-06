@@ -30,8 +30,7 @@ async fn tasker_multi() {
     let chan = Channel::new();
     let tasker = chan.clone();
     let worker_thread = std::thread::spawn(move || {
-        pasts::Executor::default()
-            .spawn(async move { worker(tasker).await })
+        pasts::Executor::default().spawn(async move { worker(tasker).await })
     });
     let worker = chan;
 

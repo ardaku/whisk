@@ -10,7 +10,7 @@
 
 #### Simple and fast async channels
 Simple and fast async channels that can be used to implement futures, streams,
-notifiers, and actors.  Whisk is purposely kept small, implemented in under 500
+notifiers, and actors.  Whisk is purposely kept small, implemented in under 300
 lines of Rust code, with zero dependencies (not including feature flags to
 enable implementation of traits from other crates) - and also works on `no_std`!
 
@@ -18,14 +18,14 @@ enable implementation of traits from other crates) - and also works on `no_std`!
 Whisk targets Rust 1.60.0 and later.
 
 ## Benchmarks
-Benchmarks for v0.3.0 mpmc call on pasts runtime (compared to dynamic library):
+Benchmarks for v0.5.0 actor on pasts runtime (compared to dynamic library):
 
 ```
 Dynamic library: 6ns
-Whisk (2-thread): 7.276µs
-Flume (2-thread): 7.643µs
-Whisk (1-thread): 169ns
-Flume (1-thread): 288ns
+Whisk (2-thread): 6.574µs
+Flume (2-thread): 7.463µs
+Whisk (1-thread): 179ns
+Flume (1-thread): 268ns
 ```
 
 These aren't very well done benchmarks, but in my testing whisk is always faster
