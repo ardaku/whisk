@@ -7,11 +7,15 @@ and this project adheres to [Semantic Versioning](https://github.com/AldaronLau/
 ## [0.5.0] - Unreleased
 ### Added
  - `Weak` reference to a `Channel`
+ - Implement `Future` for `&Channel`
+ - Implement `Notifier` for `&Channel`
+ - Implement `Stream` for `&Channel`
 
 ### Changed
  - Updated pasts to 0.12
  - `Channel::recv()` from an `async fn` to a `fn() -> impl Future`
  - `Channel::send()` from returning `Message` to returning `impl Future`
+ - `Channel::recv()` no longer requires a mutable reference
 
 ### Removed
  - `Message`

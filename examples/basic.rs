@@ -5,7 +5,7 @@ enum Cmd {
     Add(u32, u32, Channel<u32>),
 }
 
-async fn worker_main(mut channel: Channel<Option<Cmd>>) {
+async fn worker_main(channel: Channel<Option<Cmd>>) {
     while let Some(command) = channel.recv().await {
         println!("Worker receiving command");
         match command {
