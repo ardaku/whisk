@@ -406,11 +406,3 @@ impl<T: Send + Unpin> Future for Message<T> {
         })
     }
 }
-
-impl<T: Send + Unpin> Drop for Message<T> {
-    fn drop(&mut self) {
-        if self.1.is_some() {
-            panic!("Message dropped without sending");
-        }
-    }
-}

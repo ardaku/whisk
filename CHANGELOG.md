@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://github.com/AldaronLau/
 ### Removed
  - `Message`
  - Const generic arguments on `Channel`
+ - Panic on uncompleted message send
 
 ### Fixed
  - Bug with wakers when using MPMC functionality that could possibly trigger UB
