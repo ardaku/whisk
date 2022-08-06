@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://github.com/AldaronLau/
 
 ### Removed
  - `Message`
+ - Const generic arguments on `Channel`
+
+### Fixed
+ - Bug with wakers when using MPMC functionality that could possibly trigger UB
 
 ## [0.4.1] - 2022-07-23
 ### Fixed
