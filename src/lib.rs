@@ -253,22 +253,22 @@ impl<T: Send> Channel<T> {
         Self(Arc::new(Shared { spin }))
     }
 
-    /// Send a message on this channel.
-    #[inline(always)]
-    pub fn send(&self, message: T) -> impl Future<Output = ()> + Send {
-        Message((*self).clone(), Cell::new(Some(message)))
-    }
-
-    /// Receive a message from this channel.
-    #[inline(always)]
-    pub fn recv(&self) -> impl Future<Output = T> + Send + Sync + Unpin + '_ {
-        self
-    }
-
     /// Create a new corresponding [`Weak`] channel.
     #[inline]
     pub fn downgrade(&self) -> Weak<T> {
         Weak(Arc::downgrade(&self.0))
+    }
+
+    /// Send a message on this channel.
+    #[inline(always)]
+    pub async fn send(&self, message: T) {
+        Message((*self).clone(), Cell::new(Some(message))).await
+    }
+
+    /// Receive a message from this channel.
+    #[inline(always)]
+    pub async fn recv(&self) -> T {
+        self.await
     }
 
     #[inline(always)]
