@@ -381,6 +381,30 @@ impl<T: Send> Weak<T> {
     pub fn upgrade(&self) -> Option<Channel<T>> {
         Some(Channel(self.0.upgrade()?))
     }
+
+    /// Try to send a message on this channel.
+    ///
+    /// This is more efficient than `Weak::upgrade()` followed by
+    /// `Channel::send()`.
+    #[inline(always)]
+    pub async fn try_send(&self, message: T) -> Result<(), ()> {
+        if let Some(channel) = self.0.upgrade() {
+            Message(Channel(channel), Cell::new(Some(message))).await;
+            Ok(())
+        } else {
+            Err(())
+        }
+    }
+
+    /// Try to receive a message from this channel.
+    #[inline(always)]
+    pub async fn try_recv(&self) -> Result<T, ()> {
+        if let Some(channel) = self.0.upgrade() {
+            Ok(Channel(channel).await)
+        } else {
+            Err(())
+        }
+    }
 }
 
 /// A message in the process of being sent over a [`Channel`].
