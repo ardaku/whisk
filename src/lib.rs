@@ -351,7 +351,7 @@ impl<T: Send> futures_core::Stream for &Channel<Option<T>> {
     }
 }
 
-/// A weak refrence to a [`Channel`].
+/// A weak reference to a [`Channel`].
 pub struct Weak<T: Send>(sync::Weak<Shared<T>>);
 
 impl<T: Send> core::fmt::Debug for Weak<T> {
@@ -370,13 +370,13 @@ impl<T: Send> Default for Weak<T> {
 }
 
 impl<T: Send> Weak<T> {
-    /// Calling `upgrade()` will always return `None`.
+    /// Calling [`Weak::upgrade()`] will always return [`None`].
     #[inline]
     pub fn new() -> Self {
         Self(sync::Weak::new())
     }
 
-    /// Attempt to upgrade the Weak channel to a [`Channel`].
+    /// Attempt to upgrade the [`Weak`] channel to a [`Channel`].
     #[inline]
     pub fn upgrade(&self) -> Option<Channel<T>> {
         Some(Channel(self.0.upgrade()?))
@@ -384,8 +384,8 @@ impl<T: Send> Weak<T> {
 
     /// Try to send a message on this channel.
     ///
-    /// This is more efficient than `Weak::upgrade()` followed by
-    /// `Channel::send()`.
+    /// This is more efficient than [`Weak::upgrade()`] followed by
+    /// [`Channel::send()`].
     #[inline(always)]
     pub async fn try_send(&self, message: T) -> Result<(), ()> {
         if let Some(channel) = self.0.upgrade() {
