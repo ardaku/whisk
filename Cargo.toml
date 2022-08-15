@@ -10,7 +10,7 @@
 
 [package]
 name = "whisk"
-version = "0.5.0"
+version = "0.6.0"
 license = "Apache-2.0 OR BSL-1.0 OR MIT"
 description = "Simple and fast async channels"
 repository = "https://github.com/ardaku/whisk"
@@ -27,7 +27,7 @@ categories = [
 keywords = ["channel", "actor", "mpmc", "notifier", "pasts"]
 readme = "README.md"
 edition = "2021"
-rust-version = "1.59"
+rust-version = "1.60"
 
 [dependencies.futures-core]
 version = "0.3"
