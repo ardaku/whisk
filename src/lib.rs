@@ -220,7 +220,7 @@ struct Shared<T: Send> {
 ///
 /// Enable the **`pasts`** feature for `Channel` to implement
 /// [`Notifier`](pasts::Notifier).
-pub struct Channel<T: Send>(Arc<Shared<T>>);
+pub struct Channel<T: Send = ()>(Arc<Shared<T>>);
 
 impl<T: Send> core::fmt::Debug for Channel<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -352,7 +352,7 @@ impl<T: Send> futures_core::Stream for &Channel<Option<T>> {
 }
 
 /// A weak reference to a [`Channel`].
-pub struct Weak<T: Send>(sync::Weak<Shared<T>>);
+pub struct Weak<T: Send = ()>(sync::Weak<Shared<T>>);
 
 impl<T: Send> core::fmt::Debug for Weak<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {

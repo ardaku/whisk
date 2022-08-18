@@ -55,7 +55,7 @@ async fn tasker_multi() {
 async fn tasker_single(executor: &Executor) {
     // Create worker on new thread
     let chan = Channel::new();
-    let join = Channel::<()>::new();
+    let join = Channel::new();
     executor.spawn({
         let tasker = chan.clone();
         let join = join.clone();
@@ -118,7 +118,7 @@ async fn flume_multi() {
 
 async fn flume_single(executor: &Executor) {
     // Create worker on new thread
-    let join = Channel::<()>::new();
+    let join = Channel::new();
     let (worker, tasker) = flume::bounded(1);
     executor.spawn({
         let join = join.clone();
