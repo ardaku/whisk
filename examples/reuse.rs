@@ -1,4 +1,4 @@
-use whisk::{Channel, Chan, Stream};
+use whisk::{Chan, Channel, Stream};
 
 enum Cmd {
     /// Tell messenger to add

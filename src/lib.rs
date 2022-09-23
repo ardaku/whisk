@@ -1,6 +1,13 @@
 //! #### Simple and fast async channels
-//! Simple and fast async channels that can be used to implement futures,
-//! streams, notifiers, and actors.
+//! Lightweight async channel that can be used to implement futures, streams,
+//! notifiers, and actors.
+//!
+//! Whisk defines a simple [`Channel`] type rather than splitting into sender /
+//! receiver pairs.  A [`Channel`] can both send and receive.  Rather than
+//! abstracting the implementation to use an [`Arc`] internally, the [`Arc`] is
+//! exposed externally.  This allows for the programmer to avoid both wrapping
+//! in an additional [`Arc`] in cases where it would be required, and to create
+//! [`Weak`] references to the channel.
 //!
 //! # Optional Features
 //!  - **futures-core**: Implement [`Stream`](futures_core::Stream) for
@@ -17,13 +24,11 @@
 //!     Add(u32, u32, Chan<u32>),
 //! }
 //!
-//! async fn worker_main(channel: Stream<Cmd>) {
-//!     while let Some(command) = channel.recv().await {
+//! async fn worker_main(commands: Stream<Cmd>) {
+//!     while let Some(command) = commands.recv().await {
 //!         println!("Worker receiving command");
 //!         match command {
-//!             Cmd::Add(a, b, s) => {
-//!                 s.send(a + b).await;
-//!             }
+//!             Cmd::Add(a, b, s) => s.send(a + b).await,
 //!         }
 //!     }
 //!
@@ -37,8 +42,8 @@
 //!     let worker_thread = {
 //!         let channel = channel.clone();
 //!         std::thread::spawn(move || {
-//!             pasts::Executor::default()
-//!                 .spawn(async move { worker_main(channel).await })
+//!             let future = async move { worker_main(channel).await };
+//!             pasts::Executor::default().spawn(future)
 //!         })
 //!     };
 //!

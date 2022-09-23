@@ -2,7 +2,7 @@ use std::{ffi::CStr, time::Instant};
 
 use dl_api::manual::DlApi;
 use pasts::prelude::*;
-use whisk::{Channel, Stream, Chan};
+use whisk::{Chan, Channel, Stream};
 
 enum Cmd {
     /// Tell messenger to get cosine
