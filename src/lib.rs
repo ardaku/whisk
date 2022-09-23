@@ -236,27 +236,27 @@ impl<T: Send> core::fmt::Debug for Channel<T> {
 impl<T: Send> Channel<T> {
     /// Create a new channel.
     #[inline]
-    pub fn new() -> Pin<Arc<Self>> {
+    pub fn new() -> Arc<Self> {
         let spin = spin::Spin::default();
 
-        Arc::pin(Self(Shared { spin }))
+        Arc::new(Self(Shared { spin }))
     }
 
     /// Send a message on this channel.
     #[inline(always)]
-    pub async fn send(self: &Pin<Arc<Self>>, message: T) {
+    pub async fn send(self: &Arc<Self>, message: T) {
         Message((*self).clone(), Cell::new(Some(message))).await
     }
 
     /// Receive a message from this channel.
     #[inline(always)]
-    pub async fn recv(self: &Pin<Arc<Self>>) -> T {
+    pub async fn recv(self: &Arc<Self>) -> T {
         core::future::poll_fn(|cx| self.poll_internal(cx)).await
     }
 
     // Unique waking identifier
     fn uid(&self) -> usize {
-        // cast pinned pointer allocation to integer
+        // cast pointer to allocation to integer
         let pointer: *const _ = self;
         pointer as usize
     }
@@ -277,13 +277,13 @@ impl<T: Send> Channel<T> {
 }
 
 /// Type alias for convenience
-pub type Chan<T = ()> = Pin<Arc<Channel<T>>>;
+pub type Chan<T = ()> = Arc<Channel<T>>;
 /// Type alias for convenience
-pub type Stream<T = ()> = Pin<Arc<Channel<Option<T>>>>;
+pub type Stream<T = ()> = Arc<Channel<Option<T>>>;
 /// Type alias for convenience
-pub type WeakChan<T = ()> = Pin<Weak<Channel<T>>>;
+pub type WeakChan<T = ()> = Weak<Channel<T>>;
 /// Type alias for convenience
-pub type WeakStream<T = ()> = Pin<Weak<Channel<Option<T>>>>;
+pub type WeakStream<T = ()> = Weak<Channel<Option<T>>>;
 
 impl<T: Send> Future for &Channel<T> {
     type Output = T;
@@ -318,7 +318,7 @@ impl<T: Send> futures_core::Stream for &Channel<Option<T>> {
 }
 
 /// A message in the process of being sent over a [`Channel`].
-struct Message<T: Send>(Pin<Arc<Channel<T>>>, Cell<Option<T>>);
+struct Message<T: Send>(Arc<Channel<T>>, Cell<Option<T>>);
 
 #[allow(unsafe_code)]
 impl<T: Send> Message<T> {
