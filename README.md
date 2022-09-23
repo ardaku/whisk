@@ -15,17 +15,17 @@ lines of Rust code, with zero dependencies (not including feature flags to
 enable implementation of traits from other crates) - and also works on `no_std`!
 
 ## MSRV
-Whisk targets Rust 1.60.0 and later.
+Whisk targets Rust 1.64 and later.
 
 ## Benchmarks
-Benchmarks for v0.5.0 actor on pasts runtime (compared to dynamic library):
+Benchmarks for v0.8.0 actor on pasts runtime (compared to dynamic library):
 
 ```
 Dynamic library: 6ns
-Whisk (2-thread): 6.574µs
-Flume (2-thread): 7.463µs
-Whisk (1-thread): 179ns
-Flume (1-thread): 268ns
+Whisk (2-thread): 4µs
+Flume (2-thread): 4.053µs
+Whisk (1-thread): 167ns
+Flume (1-thread): 256ns
 ```
 
 These aren't very well done benchmarks, but in my testing whisk is always faster

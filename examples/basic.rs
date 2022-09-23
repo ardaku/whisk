@@ -1,17 +1,15 @@
-use whisk::Channel;
+use whisk::{Chan, Channel, Stream};
 
 enum Cmd {
     /// Tell messenger to add
-    Add(u32, u32, Channel<u32>),
+    Add(u32, u32, Chan<u32>),
 }
 
-async fn worker_main(channel: Channel<Option<Cmd>>) {
-    while let Some(command) = channel.recv().await {
+async fn worker_main(commands: Stream<Cmd>) {
+    while let Some(command) = commands.recv().await {
         println!("Worker receiving command");
         match command {
-            Cmd::Add(a, b, s) => {
-                s.send(a + b).await;
-            }
+            Cmd::Add(a, b, s) => s.send(a + b).await,
         }
     }
 
@@ -25,8 +23,8 @@ async fn tasker_main() {
     let worker_thread = {
         let channel = channel.clone();
         std::thread::spawn(move || {
-            pasts::Executor::default()
-                .spawn(async move { worker_main(channel).await })
+            let future = async move { worker_main(channel).await };
+            pasts::Executor::default().spawn(future)
         })
     };
 
@@ -35,7 +33,7 @@ async fn tasker_main() {
     let oneshot = Channel::new();
     channel.send(Some(Cmd::Add(43, 400, oneshot.clone()))).await;
     println!("Receiving response…");
-    let response = oneshot.await;
+    let response = oneshot.recv().await;
     assert_eq!(response, 443);
 
     // Tell worker to stop
