@@ -2,14 +2,14 @@ use std::{ffi::CStr, time::Instant};
 
 use dl_api::manual::DlApi;
 use pasts::prelude::*;
-use whisk::Channel;
+use whisk::{Channel, Stream, Chan};
 
 enum Cmd {
     /// Tell messenger to get cosine
-    Cos(f32, Channel<f32>),
+    Cos(f32, Chan<f32>),
 }
 
-async fn worker(channel: Channel<Option<Cmd>>) {
+async fn worker(channel: Stream<Cmd>) {
     while let Some(command) = channel.recv().await {
         match command {
             Cmd::Cos(a, s) => s.send(libm::cosf(a)).await,
@@ -81,7 +81,7 @@ async fn tasker_single(executor: &Executor) {
 
     // Tell worker to stop
     worker.send(None).await;
-    join.await;
+    join.recv().await;
 }
 
 async fn flume_multi() {
@@ -149,7 +149,7 @@ async fn flume_single(executor: &Executor) {
 
     // Tell worker to stop
     drop(worker);
-    join.await;
+    join.recv().await;
 }
 
 async fn dyn_lib() {

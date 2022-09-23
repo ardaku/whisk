@@ -1,11 +1,11 @@
-use whisk::Channel;
+use whisk::{Channel, Chan, Stream};
 
 enum Cmd {
     /// Tell messenger to add
-    Add(u32, u32, Channel<u32>),
+    Add(u32, u32, Chan<u32>),
 }
 
-async fn worker_main(channel: Channel<Option<Cmd>>) {
+async fn worker_main(channel: Stream<Cmd>) {
     while let Some(command) = channel.recv().await {
         println!("Worker receiving command");
         match command {

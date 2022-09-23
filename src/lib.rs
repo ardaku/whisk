@@ -10,14 +10,14 @@
 //! # Getting Started
 //!
 //! ```rust
-//! use whisk::Channel;
+//! use whisk::{Channel, Chan, Stream};
 //!
 //! enum Cmd {
 //!     /// Tell messenger to add
-//!     Add(u32, u32, Channel<u32>),
+//!     Add(u32, u32, Chan<u32>),
 //! }
 //!
-//! async fn worker_main(channel: Channel<Option<Cmd>>) {
+//! async fn worker_main(channel: Stream<Cmd>) {
 //!     while let Some(command) = channel.recv().await {
 //!         println!("Worker receiving command");
 //!         match command {
@@ -47,7 +47,7 @@
 //!     let oneshot = Channel::new();
 //!     channel.send(Some(Cmd::Add(43, 400, oneshot.clone()))).await;
 //!     println!("Receiving response…");
-//!     let response = oneshot.await;
+//!     let response = oneshot.recv().await;
 //!     assert_eq!(response, 443);
 //!
 //!     // Tell worker to stop
@@ -92,7 +92,7 @@
 extern crate alloc;
 
 use alloc::{
-    sync::{self, Arc},
+    sync::{Arc, Weak},
     vec::Vec,
 };
 use core::{
@@ -215,102 +215,76 @@ struct Shared<T: Send> {
 ///
 /// Implemented as a multi-producer/multi-consumer queue of size 1.
 ///
-/// Enable the **`futures-core`** feature for `Channel` to implement
+/// Enable the **`futures-core`** feature for `&Channel` to implement
 /// [`Stream`](futures_core::Stream) (generic `T` must be `Option<Item>`).
 ///
-/// Enable the **`pasts`** feature for `Channel` to implement
+/// Enable the **`pasts`** feature for `&Channel` to implement
 /// [`Notifier`](pasts::Notifier).
-pub struct Channel<T: Send = ()>(Arc<Shared<T>>);
+pub struct Channel<T: Send = ()>(Shared<T>);
 
 impl<T: Send> core::fmt::Debug for Channel<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Channel")
-            .field("strong_count", &Arc::strong_count(&self.0))
-            .finish()
-    }
-}
-
-impl<T: Send> Clone for Channel<T> {
-    #[inline]
-    fn clone(&self) -> Self {
-        Self(Arc::clone(&self.0))
-    }
-}
-
-impl<T: Send> Default for Channel<T> {
-    #[inline]
-    fn default() -> Self {
-        Self::new()
+        f.debug_struct("Channel").finish_non_exhaustive()
     }
 }
 
 impl<T: Send> Channel<T> {
     /// Create a new channel.
     #[inline]
-    pub fn new() -> Self {
+    pub fn new() -> Pin<Arc<Self>> {
         let spin = spin::Spin::default();
 
-        Self(Arc::new(Shared { spin }))
-    }
-
-    /// Create a new corresponding [`Weak`] channel.
-    #[inline]
-    pub fn downgrade(&self) -> Weak<T> {
-        Weak(Arc::downgrade(&self.0))
+        Arc::pin(Self(Shared { spin }))
     }
 
     /// Send a message on this channel.
     #[inline(always)]
-    pub async fn send(&self, message: T) {
+    pub async fn send(self: &Pin<Arc<Self>>, message: T) {
         Message((*self).clone(), Cell::new(Some(message))).await
     }
 
     /// Receive a message from this channel.
     #[inline(always)]
-    pub async fn recv(&self) -> T {
-        self.await
+    pub async fn recv(self: &Pin<Arc<Self>>) -> T {
+        core::future::poll_fn(|cx| self.poll_internal(cx)).await
     }
 
-    #[inline(always)]
+    // Unique waking identifier
+    fn uid(&self) -> usize {
+        // cast pinned pointer allocation to integer
+        let pointer: *const _ = self;
+        pointer as usize
+    }
+
+    // Internal asynchronous receive implementation
     fn poll_internal(&self, cx: &mut Context<'_>) -> Poll<T> {
         let waker = cx.waker();
-        let uid = Arc::as_ptr(&self.0) as usize;
         self.0.spin.with(|shared| {
             if let Some(output) = shared.data.take() {
                 shared.send.wake();
                 Ready(output)
             } else {
-                shared.recv.register(uid, waker.clone());
+                shared.recv.register(self.uid(), waker.clone());
                 Pending
             }
         })
     }
 }
 
-impl<T: Send> Future for Channel<T> {
-    type Output = T;
-
-    #[inline(always)]
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.poll_internal(cx)
-    }
-}
+/// Type alias for convenience
+pub type Chan<T = ()> = Pin<Arc<Channel<T>>>;
+/// Type alias for convenience
+pub type Stream<T = ()> = Pin<Arc<Channel<Option<T>>>>;
+/// Type alias for convenience
+pub type WeakChan<T = ()> = Pin<Weak<Channel<T>>>;
+/// Type alias for convenience
+pub type WeakStream<T = ()> = Pin<Weak<Channel<Option<T>>>>;
 
 impl<T: Send> Future for &Channel<T> {
     type Output = T;
 
     #[inline(always)]
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.poll_internal(cx)
-    }
-}
-
-#[cfg(feature = "pasts")]
-impl<T: Send> pasts::Notifier for Channel<T> {
-    type Event = T;
-
-    #[inline(always)]
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<T> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<T> {
         self.poll_internal(cx)
     }
 }
@@ -321,19 +295,6 @@ impl<T: Send> pasts::Notifier for &Channel<T> {
 
     #[inline(always)]
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<T> {
-        self.poll_internal(cx)
-    }
-}
-
-#[cfg(feature = "futures-core")]
-impl<T: Send> futures_core::Stream for Channel<Option<T>> {
-    type Item = T;
-
-    #[inline(always)]
-    fn poll_next(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
         self.poll_internal(cx)
     }
 }
@@ -351,64 +312,8 @@ impl<T: Send> futures_core::Stream for &Channel<Option<T>> {
     }
 }
 
-/// A weak reference to a [`Channel`].
-pub struct Weak<T: Send = ()>(sync::Weak<Shared<T>>);
-
-impl<T: Send> core::fmt::Debug for Weak<T> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Weak")
-            .field("strong_count", &sync::Weak::strong_count(&self.0))
-            .finish()
-    }
-}
-
-impl<T: Send> Default for Weak<T> {
-    #[inline]
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<T: Send> Weak<T> {
-    /// Calling [`Weak::upgrade()`] will always return [`None`].
-    #[inline]
-    pub fn new() -> Self {
-        Self(sync::Weak::new())
-    }
-
-    /// Attempt to upgrade the [`Weak`] channel to a [`Channel`].
-    #[inline]
-    pub fn upgrade(&self) -> Option<Channel<T>> {
-        Some(Channel(self.0.upgrade()?))
-    }
-
-    /// Try to send a message on this channel.
-    ///
-    /// This is more efficient than [`Weak::upgrade()`] followed by
-    /// [`Channel::send()`].
-    #[inline(always)]
-    pub async fn try_send(&self, message: T) -> Result<(), ()> {
-        if let Some(channel) = self.0.upgrade() {
-            Message(Channel(channel), Cell::new(Some(message))).await;
-            Ok(())
-        } else {
-            Err(())
-        }
-    }
-
-    /// Try to receive a message from this channel.
-    #[inline(always)]
-    pub async fn try_recv(&self) -> Result<T, ()> {
-        if let Some(channel) = self.0.upgrade() {
-            Ok(Channel(channel).await)
-        } else {
-            Err(())
-        }
-    }
-}
-
 /// A message in the process of being sent over a [`Channel`].
-struct Message<T: Send>(Channel<T>, Cell<Option<T>>);
+struct Message<T: Send>(Pin<Arc<Channel<T>>>, Cell<Option<T>>);
 
 #[allow(unsafe_code)]
 impl<T: Send> Message<T> {
@@ -426,14 +331,13 @@ impl<T: Send> Future for Message<T> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = Pin::new(&self).get_ref();
         let waker = cx.waker();
-        let uid = Arc::as_ptr(&this.0 .0) as usize;
         this.0 .0.spin.with(|shared| {
             if shared.data.is_none() {
                 shared.data = this.as_ref().pin_get().take();
                 shared.recv.wake();
                 Ready(())
             } else {
-                shared.send.register(uid, waker.clone());
+                shared.send.register(this.0.uid(), waker.clone());
                 Pending
             }
         })

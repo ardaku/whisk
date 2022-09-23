@@ -4,6 +4,17 @@ All notable changes to `whisk` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://github.com/AldaronLau/semver).
 
+## [0.8.0] - Unreleased
+### Added
+ - `Chan`, `Stream`, `WeakChan`, `WeakStream` type aliases
+
+### Removed
+ - `Weak`, no longer necessary
+
+### Changed
+ - MSRV bumped to 1.64.0
+ - `Channel::new()` now returns `Pin<Arc<Channel>>`
+
 ## [0.7.0] - 2022-08-19
 ### Changed
  - `Weak<T>` and `Channel<T>` now have a default for generics: `T = ()`
