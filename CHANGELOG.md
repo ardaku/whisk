@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://github.com/AldaronLau/
 
 ### Changed
  - MSRV bumped to 1.64.0
- - `Channel::new()` now returns `Pin<Arc<Channel>>`
+ - `Channel::new()` now returns `Arc<Channel>`
 
 ## [0.7.0] - 2022-08-19
 ### Changed
