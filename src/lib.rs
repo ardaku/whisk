@@ -38,7 +38,7 @@
 //! async fn tasker_main() {
 //!     // Create worker on new thread
 //!     println!("Spawning worker…");
-//!     let channel = Channel::new();
+//!     let channel = Stream::from(Channel::new());
 //!     let worker_thread = {
 //!         let channel = channel.clone();
 //!         std::thread::spawn(move || {
@@ -49,7 +49,7 @@
 //!
 //!     // Do an addition
 //!     println!("Sending command…");
-//!     let oneshot = Channel::new();
+//!     let oneshot = Chan::from(Channel::new());
 //!     channel.send(Some(Cmd::Add(43, 400, oneshot.clone()))).await;
 //!     println!("Receiving response…");
 //!     let response = oneshot.recv().await;
@@ -227,6 +227,12 @@ struct Shared<T: Send> {
 /// [`Notifier`](pasts::Notifier).
 pub struct Channel<T: Send = ()>(Shared<T>);
 
+impl<T: Send> Default for Channel<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T: Send> core::fmt::Debug for Channel<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Channel").finish_non_exhaustive()
@@ -236,10 +242,10 @@ impl<T: Send> core::fmt::Debug for Channel<T> {
 impl<T: Send> Channel<T> {
     /// Create a new channel.
     #[inline]
-    pub fn new() -> Arc<Self> {
+    pub fn new() -> Self {
         let spin = spin::Spin::default();
 
-        Arc::new(Self(Shared { spin }))
+        Self(Shared { spin })
     }
 
     /// Send a message on this channel.
@@ -250,7 +256,7 @@ impl<T: Send> Channel<T> {
 
     /// Receive a message from this channel.
     #[inline(always)]
-    pub async fn recv(self: &Arc<Self>) -> T {
+    pub async fn recv(&self) -> T {
         core::future::poll_fn(|cx| self.poll_internal(cx)).await
     }
 
