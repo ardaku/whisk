@@ -21,7 +21,7 @@ async fn worker_main(channel: Stream<Cmd>) {
 async fn tasker_main() {
     // Create worker on new thread
     println!("Spawning worker…");
-    let channel = Channel::new();
+    let channel = Stream::from(Channel::new());
     let worker_thread = {
         let channel = channel.clone();
         std::thread::spawn(move || {
@@ -31,7 +31,7 @@ async fn tasker_main() {
     };
 
     // Do an addition
-    let oneshot = Channel::new();
+    let oneshot = Chan::from(Channel::new());
     for _ in 0..32 {
         println!("Sending command…");
         channel.send(Some(Cmd::Add(43, 400, oneshot.clone()))).await;
