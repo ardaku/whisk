@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://github.com/AldaronLau/
  - MSRV bumped to 1.64.0
  - `Channel::new()` no longer contains an `Arc`, so it's no longer `Clone`.  The
    usage of `Arc` is now up to the user of the library.
+ - `Channel::new()` is now a `const fn`
 
 ## [0.7.0] - 2022-08-19
 ### Changed

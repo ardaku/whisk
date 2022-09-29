@@ -120,13 +120,12 @@ mod spin {
     use super::*;
 
     /// A spinlock
-    #[derive(Default)]
-    pub(super) struct Spin<T: Default> {
-        flag: AtomicBool,
-        data: UnsafeCell<T>,
+    pub(super) struct Spin<T> {
+        pub(super) flag: AtomicBool,
+        pub(super) data: UnsafeCell<T>,
     }
 
-    impl<T: Default> Spin<T> {
+    impl<T> Spin<T> {
         #[inline(always)]
         pub(super) fn with<O>(&self, then: impl FnOnce(&mut T) -> O) -> O {
             while self
@@ -143,12 +142,11 @@ mod spin {
         }
     }
 
-    unsafe impl<T: Default + Send> Send for Spin<T> {}
-    unsafe impl<T: Default + Send> Sync for Spin<T> {}
+    unsafe impl<T: Send> Send for Spin<T> {}
+    unsafe impl<T: Send> Sync for Spin<T> {}
 }
 
 /// Type for waking on send or receive
-#[derive(Default)]
 #[repr(C)]
 struct Wake {
     /// Channel waker
@@ -200,23 +198,12 @@ struct Locked<T: Send> {
     data: Option<T>,
 }
 
-impl<T: Send> Default for Locked<T> {
-    #[inline]
-    fn default() -> Self {
-        let data = None;
-        let send = Wake::default();
-        let recv = Wake::default();
-
-        Self { data, send, recv }
-    }
-}
-
-#[derive(Default)]
 struct Shared<T: Send> {
     spin: spin::Spin<Locked<T>>,
 }
 
-/// A `Channel` notifies when another `Channel` sends a message.
+/// A `Channel` can send messages to itself, and can be shared between threads
+/// and tasks.
 ///
 /// Implemented as a multi-producer/multi-consumer queue of size 1.
 ///
@@ -242,8 +229,24 @@ impl<T: Send> core::fmt::Debug for Channel<T> {
 impl<T: Send> Channel<T> {
     /// Create a new channel.
     #[inline]
-    pub fn new() -> Self {
-        let spin = spin::Spin::default();
+    pub const fn new() -> Self {
+        let locked = Locked {
+            data: None,
+            send: Wake {
+                wake: None,
+                chan: 0,
+                list: Vec::new(),
+            },
+            recv: Wake {
+                wake: None,
+                chan: 0,
+                list: Vec::new(),
+            },
+        };
+        let spin = spin::Spin {
+            flag: AtomicBool::new(false),
+            data: UnsafeCell::new(locked),
+        };
 
         Self(Shared { spin })
     }
