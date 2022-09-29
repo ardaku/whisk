@@ -13,7 +13,8 @@ and this project adheres to [Semantic Versioning](https://github.com/AldaronLau/
 
 ### Changed
  - MSRV bumped to 1.64.0
- - `Channel::new()` now returns `Arc<Channel>`
+ - `Channel::new()` no longer contains an `Arc`, so it's no longer `Clone`.  The
+   usage of `Arc` is now up to the user of the library.
 
 ## [0.7.0] - 2022-08-19
 ### Changed

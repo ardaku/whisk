@@ -250,8 +250,8 @@ impl<T: Send> Channel<T> {
 
     /// Send a message on this channel.
     #[inline(always)]
-    pub async fn send(self: &Arc<Self>, message: T) {
-        Message((*self).clone(), Cell::new(Some(message))).await
+    pub async fn send(&self, message: T) {
+        Message(self, Cell::new(Some(message))).await
     }
 
     /// Receive a message from this channel.
@@ -324,10 +324,10 @@ impl<T: Send> futures_core::Stream for &Channel<Option<T>> {
 }
 
 /// A message in the process of being sent over a [`Channel`].
-struct Message<T: Send>(Arc<Channel<T>>, Cell<Option<T>>);
+struct Message<'a, T: Send>(&'a Channel<T>, Cell<Option<T>>);
 
 #[allow(unsafe_code)]
-impl<T: Send> Message<T> {
+impl<T: Send> Message<'_, T> {
     #[inline(always)]
     fn pin_get(self: Pin<&Self>) -> Pin<&Cell<Option<T>>> {
         // This is okay because `1` is pinned when `self` is.
@@ -335,7 +335,7 @@ impl<T: Send> Message<T> {
     }
 }
 
-impl<T: Send> Future for Message<T> {
+impl<T: Send> Future for Message<'_, T> {
     type Output = ();
 
     #[inline]

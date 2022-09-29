@@ -22,10 +22,10 @@ Benchmarks for v0.8.0 actor on pasts runtime (compared to dynamic library):
 
 ```
 Dynamic library: 6ns
-Whisk (2-thread): 4µs
-Flume (2-thread): 4.053µs
-Whisk (1-thread): 167ns
-Flume (1-thread): 256ns
+Whisk (2-thread): 4.029µs
+Flume (2-thread): 4.172µs
+Whisk (1-thread): 145ns
+Flume (1-thread): 247ns
 ```
 
 These aren't very well done benchmarks, but in my testing whisk is always faster
