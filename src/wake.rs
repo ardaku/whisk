@@ -6,8 +6,10 @@ use core::{
     task::Waker,
 };
 
-use crate::list::{DynList, List};
-use crate::tcms::Tcms;
+use crate::{
+    list::{DynList, List},
+    tcms::Tcms,
+};
 
 pub(crate) struct RecvHandle(usize);
 
@@ -27,49 +29,47 @@ pub(crate) struct WakeList {
 
 impl WakeList {
     /// Create a new lockless multi-waker
-    pub(crate) fn new(&self) -> Self {
+    pub(crate) fn new() -> Self {
         let send = Tcms::new();
         let recv = Tcms::new();
         let garbage = Tcms::new();
         let slot = AtomicUsize::new(0);
 
-        Self { send, recv, garbage, slot }
+        Self {
+            send,
+            recv,
+            garbage,
+            slot,
+        }
     }
 
-    /// Allocate a new slot in the consumer waker list
-    fn alloc_recv(&self) -> RecvHandle {
-        let id = self.garbage.with(|g| g.pop(), merge).unwrap_or_else(|| self.slot.fetch_add(1, Ordering::Relaxed));
-        self.recv.with(|list| list.push((id, None)), merge);
+    /// Set waker
+    fn when_recv(&self, waker: Waker) -> RecvHandle {
+        let id = self
+            .garbage
+            .with(|g| g.pop(), merge)
+            .unwrap_or_else(|| self.slot.fetch_add(1, Ordering::Relaxed));
+        self.recv.with(|list| list.push((id, Some(waker))), merge);
         RecvHandle(id)
     }
-    
-    /// Allocate a new slot in the producer waker list
-    fn alloc_send(&self) -> SendHandle {
-        let id = self.garbage.with(|g| g.pop(), merge).unwrap_or_else(|| self.slot.fetch_add(1, Ordering::Relaxed));
-        self.send.with(|list| list.push((id, None)), merge);
+
+    /// Set waker
+    fn when_send(&self, waker: Waker) -> SendHandle {
+        let id = self
+            .garbage
+            .with(|g| g.pop(), merge)
+            .unwrap_or_else(|| self.slot.fetch_add(1, Ordering::Relaxed));
+        self.send.with(|list| list.push((id, Some(waker))), merge);
         SendHandle(id)
     }
 
-    /*
-    /// Overwrite stored waker for a producer handle
-    fn when_send(&self, handle: SendHandle, waker: Waker) {
-        self.send.with(|list| *list.get(handle.0) = Some(waker), merge);
-    }
-
-    /// Overwrite stored waker for a producer handle
-    fn when_recv(&self, handle: RecvHandle, waker: Waker) {
-        self.recv.with(|list| *list.get(handle.0) = Some(waker), merge);
-    }
-    */
-
-
-    /// Free a handle to be reused
-    fn free_send(&self, _handle: SendHandle) {
+    /// Free a send handle to be reused
+    fn begin_free_send(&self, _handle: SendHandle) {
         todo!()
     }
-    
-    /// Free a handle to be reused
-    fn free_recv(&self, _handle: RecvHandle) {
+
+    /// Free a recv handle to be reused
+    fn begin_free_recv(&self, _handle: RecvHandle) {
         todo!()
     }
 

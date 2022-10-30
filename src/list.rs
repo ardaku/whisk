@@ -20,7 +20,7 @@ impl<T, const CAP: usize> DynList<T, CAP> {
         match **self {
             Grow(ref mut grow) => {
                 match *other {
-                    Grow(ref mut l) => grow.0.extend(l.0.drain(..)),
+                    Grow(ref mut l) => grow.0.append(&mut l.0),
                     Fixed(ref mut l) => {
                         grow.0.extend(
                             l.data[..l.size]
@@ -109,7 +109,7 @@ pub(crate) trait List<T> {
     fn push(&mut self, item: T);
     fn pop(&mut self) -> Option<T>;
     fn len(&self) -> usize;
-    // fn get(&mut self, index: usize) -> &mut T;
+    fn as_slice(&mut self) -> &mut [T];
 }
 
 impl<T, const CAP: usize> List<T> for DynList<T, CAP> {
@@ -143,12 +143,12 @@ impl<T, const CAP: usize> List<T> for DynList<T, CAP> {
         }
     }
 
-    /*fn get(&mut self, index: usize) -> &mut T {
+    fn as_slice(&mut self) -> &mut [T] {
         match self {
-            DynList::Grow(ref mut list) => list.get(index),
-            DynList::Fixed(ref mut list) => list.get(index),
+            DynList::Grow(ref mut list) => list.as_slice(),
+            DynList::Fixed(ref mut list) => list.as_slice(),
         }
-    }*/
+    }
 }
 
 impl<T> List<T> for GrowList<T> {
@@ -164,9 +164,9 @@ impl<T> List<T> for GrowList<T> {
         self.0.len()
     }
 
-    /*fn get(&mut self, index: usize) -> &mut T {
-        self.0.get_mut(index).unwrap()
-    }*/
+    fn as_slice(&mut self) -> &mut [T] {
+        self.0.as_mut_slice()
+    }
 }
 
 impl<T, const CAP: usize> List<T> for FixedList<T, CAP> {
@@ -189,11 +189,9 @@ impl<T, const CAP: usize> List<T> for FixedList<T, CAP> {
         self.size
     }
 
-    /*fn get(&mut self, index: usize) -> &mut T {
-        assert!(index < self.size);
-
-        unsafe { self.data[index].assume_init_mut() }
-    }*/
+    fn as_slice(&mut self) -> &mut [T] {
+        unsafe { slice_assume_init_mut(&mut self.data[..self.size]) }
+    }
 }
 
 impl<T, const CAP: usize> Drop for FixedList<T, CAP> {
@@ -225,4 +223,13 @@ unsafe fn array_assume_init<T, const N: usize>(
     let array: *const [T; N] = array.cast();
 
     array.read()
+}
+
+#[inline(always)]
+unsafe fn slice_assume_init_mut<T>(slice: &mut [MaybeUninit<T>]) -> &mut [T] {
+    // SAFETY: similar to safety notes for `slice_get_ref`, but we have a
+    // mutable reference which is also guaranteed to be valid for writes.
+    let slice: *mut _ = slice;
+
+    &mut *(slice as *mut [T])
 }
