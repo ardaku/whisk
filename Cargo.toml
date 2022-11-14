@@ -42,7 +42,7 @@ pasts = "0.12"
 dl_api = "0.4"
 futures = "0.3"
 flume = "0.10"
-ntest = "0.8"
+ntest = "0.9"
 libm = "0.2"
 
 [features]
