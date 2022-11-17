@@ -3,11 +3,7 @@
 //! notifiers, and actors.
 //!
 //! Whisk defines a simple [`Channel`] type rather than splitting into sender /
-//! receiver pairs.  A [`Channel`] can both send and receive.  Rather than
-//! abstracting the implementation to use an [`Arc`] internally, the [`Arc`] is
-//! exposed externally.  This allows for the programmer to avoid both wrapping
-//! in an additional [`Arc`] in cases where it would be required, and to create
-//! [`Weak`] references to the channel.
+//! receiver pairs.  A [`Channel`] can both send and receive.
 //!
 //! # Optional Features
 //!  - **futures-core**: Implement [`Stream`](futures_core::Stream) for
@@ -17,14 +13,14 @@
 //! # Getting Started
 //!
 //! ```rust
-//! use whisk::{Channel, Chan, Stream};
+//! use whisk::Channel;
 //!
 //! enum Cmd {
 //!     /// Tell messenger to add
-//!     Add(u32, u32, Chan<u32>),
+//!     Add(u32, u32, Channel<u32>),
 //! }
 //!
-//! async fn worker_main(commands: Stream<Cmd>) {
+//! async fn worker_main(commands: Channel<Option<Cmd>>) {
 //!     while let Some(command) = commands.recv().await {
 //!         println!("Worker receiving command");
 //!         match command {
@@ -38,18 +34,14 @@
 //! async fn tasker_main() {
 //!     // Create worker on new thread
 //!     println!("Spawning worker…");
-//!     let channel = Stream::from(Channel::new());
-//!     let worker_thread = {
-//!         let channel = channel.clone();
-//!         std::thread::spawn(move || {
-//!             let future = async move { worker_main(channel).await };
-//!             pasts::Executor::default().spawn(future)
-//!         })
-//!     };
+//!     let channel = Channel::new();
+//!     let worker_task = worker_main(channel.clone());
+//!     let worker_thread =
+//!         std::thread::spawn(|| pasts::Executor::default().spawn(worker_task));
 //!
 //!     // Do an addition
 //!     println!("Sending command…");
-//!     let oneshot = Chan::from(Channel::new());
+//!     let oneshot = Channel::new();
 //!     channel.send(Some(Cmd::Add(43, 400, oneshot.clone()))).await;
 //!     println!("Receiving response…");
 //!     let response = oneshot.recv().await;
@@ -96,161 +88,85 @@
 
 extern crate alloc;
 
-use alloc::{
-    sync::{Arc, Weak},
-    vec::Vec,
-};
+use alloc::sync::Arc;
 use core::{
-    cell::{Cell, UnsafeCell},
+    cell::Cell,
     future::Future,
     pin::Pin,
-    sync::atomic::{
-        self, AtomicBool,
-        Ordering::{Acquire, Relaxed, Release},
-    },
     task::{
         Context,
         Poll::{self, Pending, Ready},
-        Waker,
     },
 };
 
 #[allow(unsafe_code)]
-mod spin {
-    use super::*;
+mod mutex;
+#[allow(unsafe_code)]
+mod wake_list;
 
-    /// A spinlock
-    pub(super) struct Spin<T> {
-        pub(super) flag: AtomicBool,
-        pub(super) data: UnsafeCell<T>,
-    }
-
-    impl<T> Spin<T> {
-        #[inline(always)]
-        pub(super) fn with<O>(&self, then: impl FnOnce(&mut T) -> O) -> O {
-            while self
-                .flag
-                .compare_exchange_weak(false, true, Relaxed, Relaxed)
-                .is_err()
-            {
-                core::hint::spin_loop();
-            }
-            atomic::fence(Acquire);
-            let output = then(unsafe { &mut *self.data.get() });
-            self.flag.store(false, Release);
-            output
-        }
-    }
-
-    unsafe impl<T: Send> Send for Spin<T> {}
-    unsafe impl<T: Send> Sync for Spin<T> {}
-}
-
-/// Type for waking on send or receive
-#[repr(C)]
-struct Wake {
-    /// Channel waker
-    wake: Option<Waker>,
-    /// Channel unique identifier (the arc pointer casted to usize)
-    chan: usize,
-    /// Heap wakers
-    list: Vec<(usize, Waker)>,
-}
-
-impl Wake {
-    /// Register a waker for a channel
-    #[inline(always)]
-    fn register(&mut self, chan: usize, waker: Waker) {
-        if let Some(wake) = self.wake.take() {
-            if self.chan == chan {
-                (self.chan, self.wake) = (chan, Some(waker));
-            } else {
-                self.list.extend([(self.chan, wake), (chan, waker)]);
-            }
-        } else if self.list.is_empty() {
-            (self.chan, self.wake) = (chan, Some(waker));
-        } else if let Some(wake) = self.list.iter_mut().find(|w| w.0 == chan) {
-            wake.1 = waker;
-        } else {
-            self.list.push((chan, waker));
-        }
-    }
-
-    /// Wake all channels and de-register all wakers
-    #[inline(always)]
-    fn wake(&mut self) {
-        if let Some(waker) = self.wake.take() {
-            waker.wake();
-            return;
-        }
-        for waker in self.list.drain(..) {
-            waker.1.wake();
-        }
-    }
-}
-
-struct Locked<T: Send> {
-    /// Receive wakers
-    recv: Wake,
-    /// Send wakers
-    send: Wake,
-    /// Data in transit
-    data: Option<T>,
-}
-
-struct Shared<T: Send> {
-    spin: spin::Spin<Locked<T>>,
-}
-
-/// A `Channel` can send messages to itself, and can be shared between threads
+/// A `Queue` can send messages to itself, and can be shared between threads
 /// and tasks.
 ///
 /// Implemented as a multi-producer/multi-consumer queue of size 1.
 ///
-/// Enable the **`futures-core`** feature for `&Channel` to implement
+/// Enable the **`futures-core`** feature for `&Queue` to implement
 /// [`Stream`](futures_core::Stream) (generic `T` must be `Option<Item>`).
 ///
-/// Enable the **`pasts`** feature for `&Channel` to implement
+/// Enable the **`pasts`** feature for `&Queue` to implement
 /// [`Notifier`](pasts::Notifier).
-pub struct Channel<T: Send = ()>(Shared<T>);
-
-impl<T: Send> Default for Channel<T> {
-    fn default() -> Self {
-        Self::new()
-    }
+pub struct Queue<T = (), U: ?Sized = ()> {
+    /// Receive wakers
+    recv: wake_list::WakeList,
+    /// Send wakers
+    send: wake_list::WakeList,
+    /// Data in transit
+    data: mutex::Mutex<Option<T>>,
+    /// User data
+    user: U,
 }
 
-impl<T: Send> core::fmt::Debug for Channel<T> {
+impl<T, U: ?Sized> core::fmt::Debug for Queue<T, U> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Channel").finish_non_exhaustive()
+        f.debug_struct("Queue").finish_non_exhaustive()
     }
 }
 
-impl<T: Send> Channel<T> {
+impl<T, U: ?Sized> core::ops::Deref for Queue<T, U> {
+    type Target = U;
+
+    fn deref(&self) -> &Self::Target {
+        &self.user
+    }
+}
+
+impl<T, U: ?Sized + Default> Default for Queue<T, U> {
+    fn default() -> Self {
+        Self::with(U::default())
+    }
+}
+
+impl<T> Queue<T> {
     /// Create a new channel.
     #[inline]
     pub const fn new() -> Self {
-        let locked = Locked {
-            data: None,
-            send: Wake {
-                wake: None,
-                chan: 0,
-                list: Vec::new(),
-            },
-            recv: Wake {
-                wake: None,
-                chan: 0,
-                list: Vec::new(),
-            },
-        };
-        let spin = spin::Spin {
-            flag: AtomicBool::new(false),
-            data: UnsafeCell::new(locked),
-        };
-
-        Self(Shared { spin })
+        Self::with(())
     }
+}
 
+impl<T, U> Queue<T, U> {
+    /// Create a new channel with associated data.
+    #[inline]
+    pub const fn with(user_data: U) -> Self {
+        Self {
+            data: mutex::Mutex::new(None),
+            send: wake_list::WakeList::new(),
+            recv: wake_list::WakeList::new(),
+            user: user_data,
+        }
+    }
+}
+
+impl<T, U: ?Sized> Queue<T, U> {
     /// Send a message on this channel.
     #[inline(always)]
     pub async fn send(&self, message: T) {
@@ -263,38 +179,30 @@ impl<T: Send> Channel<T> {
         core::future::poll_fn(|cx| self.poll_internal(cx)).await
     }
 
-    // Unique waking identifier
-    fn uid(&self) -> usize {
-        // cast pointer to allocation to integer
-        let pointer: *const _ = self;
-        pointer as usize
-    }
-
     // Internal asynchronous receive implementation
     fn poll_internal(&self, cx: &mut Context<'_>) -> Poll<T> {
         let waker = cx.waker();
-        self.0.spin.with(|shared| {
-            if let Some(output) = shared.data.take() {
-                shared.send.wake();
+        // FIXME Registration happens while owned to avoid data race
+        let poll = self.data.try_with(|inner| {
+            if let Some(output) = inner.map(|x| x.take()).flatten() {
                 Ready(output)
             } else {
-                shared.recv.register(self.uid(), waker.clone());
+                // Nothing is available yet, register waker for when it is
+                self.recv.register(waker.clone());
                 Pending
             }
+        });
+
+        // Any waking happens after the data is released
+        poll.map(|x| {
+            // Now that space is available, possibly wake a sender
+            self.send.wake_one();
+            x
         })
     }
 }
 
-/// Type alias for convenience
-pub type Chan<T = ()> = Arc<Channel<T>>;
-/// Type alias for convenience
-pub type Stream<T = ()> = Arc<Channel<Option<T>>>;
-/// Type alias for convenience
-pub type WeakChan<T = ()> = Weak<Channel<T>>;
-/// Type alias for convenience
-pub type WeakStream<T = ()> = Weak<Channel<Option<T>>>;
-
-impl<T: Send> Future for &Channel<T> {
+impl<T, U: ?Sized> Future for &Queue<T, U> {
     type Output = T;
 
     #[inline(always)]
@@ -304,7 +212,7 @@ impl<T: Send> Future for &Channel<T> {
 }
 
 #[cfg(feature = "pasts")]
-impl<T: Send> pasts::Notifier for &Channel<T> {
+impl<T, U: ?Sized> pasts::Notifier for &Queue<T, U> {
     type Event = T;
 
     #[inline(always)]
@@ -314,23 +222,23 @@ impl<T: Send> pasts::Notifier for &Channel<T> {
 }
 
 #[cfg(feature = "futures-core")]
-impl<T: Send> futures_core::Stream for &Channel<Option<T>> {
+impl<T, U: ?Sized> futures_core::Stream for &Queue<Option<T>, U> {
     type Item = T;
 
     #[inline(always)]
     fn poll_next(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
+    ) -> Poll<Option<T>> {
         self.poll_internal(cx)
     }
 }
 
-/// A message in the process of being sent over a [`Channel`].
-struct Message<'a, T: Send>(&'a Channel<T>, Cell<Option<T>>);
+/// A message in the process of being sent over a [`Queue`].
+struct Message<'a, T, U: ?Sized>(&'a Queue<T, U>, Cell<Option<T>>);
 
 #[allow(unsafe_code)]
-impl<T: Send> Message<'_, T> {
+impl<T, U: ?Sized> Message<'_, T, U> {
     #[inline(always)]
     fn pin_get(self: Pin<&Self>) -> Pin<&Cell<Option<T>>> {
         // This is okay because `1` is pinned when `self` is.
@@ -338,22 +246,105 @@ impl<T: Send> Message<'_, T> {
     }
 }
 
-impl<T: Send> Future for Message<'_, T> {
+impl<T, U: ?Sized> Future for Message<'_, T, U> {
     type Output = ();
 
     #[inline]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = Pin::new(&self).get_ref();
         let waker = cx.waker();
-        this.0 .0.spin.with(|shared| {
-            if shared.data.is_none() {
-                shared.data = this.as_ref().pin_get().take();
-                shared.recv.wake();
-                Ready(())
+        // FIXME Registration happens while owned to avoid data race
+        let poll = this.0.data.try_with(|inner| {
+            if let Some(shared) = inner {
+                if shared.is_none() {
+                    *shared = this.as_ref().pin_get().take();
+                    Ready(())
+                } else {
+                    this.0.send.register(waker.clone());
+                    Pending
+                }
             } else {
-                shared.send.register(this.0.uid(), waker.clone());
+                this.0.send.register(waker.clone());
                 Pending
             }
+        });
+
+        // Any waking happens after the data is released
+        poll.map(|x| {
+            // Now that data has been written, possibly wake a receiver
+            this.0.recv.wake_one();
+            x
         })
+    }
+}
+
+/// An MPMC channel with both send and receive capabilities
+pub struct Channel<T = (), U: ?Sized = ()>(Arc<Queue<T, U>>);
+
+impl<T> Channel<T> {
+    /// Create a new channel.
+    #[inline(always)]
+    pub fn new() -> Self {
+        Self(Arc::new(Queue::new()))
+    }
+}
+
+impl<T, U> Channel<T, U> {
+    /// Create a new channel with associated data.
+    #[inline(always)]
+    pub fn with(user_data: U) -> Self {
+        Self::from_inner(Arc::new(Queue::with(user_data)))
+    }
+}
+
+impl<T, U: ?Sized> Channel<T, U> {
+    /// Send a message on this channel.
+    #[inline(always)]
+    pub async fn send(&self, message: T) {
+        self.0.send(message).await
+    }
+
+    /// Receive a message from this channel.
+    #[inline(always)]
+    pub async fn recv(&self) -> T {
+        self.0.recv().await
+    }
+
+    /// Get the internal [`Arc`] out from the channel.
+    #[inline(always)]
+    pub fn into_inner(self) -> Arc<Queue<T, U>> {
+        self.0
+    }
+
+    /// Create a new channel from a [`Queue`] wrapped in an [`Arc`].
+    #[inline(always)]
+    pub fn from_inner(inner: Arc<Queue<T, U>>) -> Self {
+        Self(inner)
+    }
+}
+
+impl<T, U: ?Sized> Clone for Channel<T, U> {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
+
+impl<T, U: ?Sized> core::fmt::Debug for Channel<T, U> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Channel").finish_non_exhaustive()
+    }
+}
+
+impl<T, U: ?Sized + Default> Default for Channel<T, U> {
+    fn default() -> Self {
+        Self::with(U::default())
+    }
+}
+
+impl<T, U: ?Sized> core::ops::Deref for Channel<T, U> {
+    type Target = U;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0.user
     }
 }
