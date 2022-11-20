@@ -273,13 +273,19 @@ impl<T, U: ?Sized> Future for Message<'_, T, U> {
 }
 
 /// An MPMC channel with both send and receive capabilities
-pub struct Channel<T = (), U: ?Sized = ()>(Arc<Queue<T, U>>);
+pub struct Channel<T = (), U: ?Sized = ()>(Arc<Queue<T, U>>, WakeHandle);
+
+impl<T, U: ?Sized> Drop for Channel<T, U> {
+    fn drop(&mut self) {
+        self.0.recv.registration(&mut self.1, None);
+    }
+}
 
 impl<T> Channel<T> {
     /// Create a new channel.
     #[inline(always)]
     pub fn new() -> Self {
-        Self(Arc::new(Queue::new()))
+        Self(Arc::new(Queue::new()), WakeHandle::default())
     }
 }
 
@@ -310,19 +316,19 @@ impl<T, U: ?Sized> Channel<T, U> {
     /// Get the internal [`Arc`] out from the channel.
     #[inline(always)]
     pub fn into_inner(self) -> Arc<Queue<T, U>> {
-        self.0
+        self.0.clone()
     }
 
     /// Create a new channel from a [`Queue`] wrapped in an [`Arc`].
     #[inline(always)]
     pub fn from_inner(inner: Arc<Queue<T, U>>) -> Self {
-        Self(inner)
+        Self(inner, WakeHandle::default())
     }
 }
 
 impl<T, U: ?Sized> Clone for Channel<T, U> {
     fn clone(&self) -> Self {
-        Self(Arc::clone(&self.0))
+        Self(Arc::clone(&self.0), WakeHandle::default())
     }
 }
 
@@ -346,13 +352,13 @@ impl<T, U: ?Sized> core::ops::Deref for Channel<T, U> {
     }
 }
 
-/*
 impl<T, U: ?Sized> Future for Channel<T, U> {
     type Output = T;
 
     #[inline(always)]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<T> {
-        self.0.poll_internal(cx, &self.1)
+        let this = self.get_mut();
+        this.0.poll_internal(cx, &mut this.1)
     }
 }
 
@@ -362,7 +368,8 @@ impl<T, U: ?Sized> pasts::Notifier for Channel<T, U> {
 
     #[inline(always)]
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<T> {
-        self.0.poll_internal(cx, &mut self.1)
+        let this = self.get_mut();
+        this.0.poll_internal(cx, &mut this.1)
     }
 }
 
@@ -375,7 +382,7 @@ impl<T, U: ?Sized> futures_core::Stream for Channel<Option<T>, U> {
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<T>> {
-        self.0.poll_internal(cx, &mut self.1)
+        let this = self.get_mut();
+        this.0.poll_internal(cx, &mut this.1)
     }
 }
-*/
