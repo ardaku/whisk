@@ -2,14 +2,14 @@ use std::{ffi::CStr, time::Instant};
 
 use dl_api::manual::DlApi;
 use pasts::prelude::*;
-use whisk::{Chan, Channel, Stream};
+use whisk::Channel;
 
 enum Cmd {
     /// Tell messenger to get cosine
-    Cos(f32, Chan<f32>),
+    Cos(f32, Channel<f32>),
 }
 
-async fn worker(channel: Stream<Cmd>) {
+async fn worker(channel: Channel<Option<Cmd>>) {
     while let Some(command) = channel.recv().await {
         match command {
             Cmd::Cos(a, s) => s.send(libm::cosf(a)).await,
@@ -27,14 +27,14 @@ async fn worker_flume(tasker: flume::Receiver<Cmd>) {
 
 async fn tasker_multi() {
     // Create worker on new thread
-    let chan = Stream::from(Channel::new());
+    let chan = Channel::new();
     let tasker = chan.clone();
     let worker_thread = std::thread::spawn(move || {
         pasts::Executor::default().spawn(async move { worker(tasker).await })
     });
     let worker = chan;
 
-    let channel = Chan::from(Channel::new());
+    let channel = Channel::new();
     for _ in 1..=1024 {
         worker.send(Some(Cmd::Cos(750.0, channel.clone()))).await;
         channel.recv().await;
@@ -54,8 +54,8 @@ async fn tasker_multi() {
 
 async fn tasker_single(executor: &Executor) {
     // Create worker on new thread
-    let chan = Chan::from(Channel::new());
-    let join = Chan::from(Channel::new());
+    let chan = Channel::new();
+    let join = Channel::new();
     executor.spawn({
         let tasker = chan.clone();
         let join = join.clone();
@@ -66,7 +66,7 @@ async fn tasker_single(executor: &Executor) {
     });
     let worker = chan;
 
-    let channel = Chan::from(Channel::new());
+    let channel = Channel::new();
     for _ in 1..=1024 {
         worker.send(Some(Cmd::Cos(750.0, channel.clone()))).await;
         channel.recv().await;
@@ -92,7 +92,7 @@ async fn flume_multi() {
             .spawn(async move { worker_flume(tasker).await })
     });
 
-    let channel = Chan::from(Channel::new());
+    let channel = Channel::new();
     for _ in 1..=1024 {
         worker
             .send_async(Cmd::Cos(750.0, channel.clone()))
@@ -118,7 +118,7 @@ async fn flume_multi() {
 
 async fn flume_single(executor: &Executor) {
     // Create worker on new thread
-    let join = Chan::from(Channel::new());
+    let join = Channel::new();
     let (worker, tasker) = flume::bounded(1);
     executor.spawn({
         let join = join.clone();
@@ -128,7 +128,7 @@ async fn flume_single(executor: &Executor) {
         }
     });
 
-    let channel = Chan::from(Channel::new());
+    let channel = Channel::new();
     for _ in 1..=1024 {
         worker
             .send_async(Cmd::Cos(750.0, channel.clone()))

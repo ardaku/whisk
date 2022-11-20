@@ -10,7 +10,16 @@ use core::{
     task::Waker,
 };
 
-pub(crate) struct WakeHandle(usize);
+/// Handle to an optional waker
+#[derive(Default)]
+pub(crate) struct WakeHandle(Option<NonZeroUsize>);
+
+impl WakeHandle {
+    /// Get the index into the wakelist
+    fn index(&self) -> Option<usize> {
+        self.0.map(|index| usize::from(index) - 1)
+    }
+}
 
 /// A `WakeList` stores append-only atomic linked lists of wakers and garbage
 pub(crate) struct WakeList {
@@ -41,11 +50,8 @@ impl WakeList {
     }
 
     /// Register a waker
-    pub(crate) fn register(
-        &self,
-        waker: impl Into<Option<Waker>>,
-    ) -> WakeHandle {
-        let waker = waker.into();
+    pub(crate) fn register(&self, waker: Waker) -> WakeHandle {
+        let waker = Some(waker);
 
         // Check garbage for reuse
         let garbage = 'garbage: {
@@ -53,11 +59,16 @@ impl WakeList {
                 if let Some(wh) =
                     NonZeroUsize::new(garbage.fetch_and(0, Relaxed))
                 {
-                    let index = usize::from(wh) - 1;
-                    let wakey = self.wakers.iter().nth(index).unwrap();
+                    let handle = WakeHandle(Some(wh));
+                    let wakey = self
+                        .wakers
+                        .iter()
+                        .nth(handle.index().unwrap())
+                        .unwrap();
+
                     // Only if non-contended (AtomicBool could be true)
                     if !wakey.0.load(Acquire) {
-                        break 'garbage Some((wakey, index));
+                        break 'garbage Some((wakey, handle));
                     }
                 }
             }
@@ -65,23 +76,23 @@ impl WakeList {
         };
 
         // Add waker to the list and get its index as a handle
-        let handle = if let Some((wakey, index)) = garbage {
+        if let Some((wakey, handle)) = garbage {
             // Replace existing
             unsafe { *wakey.1.get() = waker };
-            index
+
+            handle
         } else {
             // If no garbage exists, push new pair
             self.wakers
                 .push((AtomicBool::new(false), UnsafeCell::new(waker)));
-            self.size.fetch_add(1, Relaxed)
-        };
 
-        WakeHandle(handle)
+            WakeHandle(NonZeroUsize::new(self.size.fetch_add(1, Relaxed)))
+        }
     }
 
     /// Re-register a `WakeHandle` with a new `Waker`.
     pub(crate) fn reregister(&self, handle: &mut WakeHandle, waker: Waker) {
-        let wakey = self.wakers.iter().nth(handle.0).unwrap();
+        let wakey = self.wakers.iter().nth(handle.index().unwrap()).unwrap();
 
         if !wakey.0.fetch_or(true, Acquire) {
             // Non-contended, update
@@ -97,21 +108,37 @@ impl WakeList {
     /// Clean up wake handle
     pub(crate) fn unregister(&self, handle: &mut WakeHandle) {
         // Add to garbage
-        let handle = handle.0 + 1;
+        let Some(index) = handle.index() else { return };
 
         // Go through existing slots, looking for an empty one
         for garbage in self.garbage.iter() {
-            if garbage
-                .compare_exchange(0, handle, Relaxed, Relaxed)
-                .is_ok()
-            {
+            if garbage.compare_exchange(0, index, Relaxed, Relaxed).is_ok() {
                 // Added to garbage successfully
                 return;
             }
         }
 
         // Garbage is out of space, allocate new node
-        self.garbage.push(AtomicUsize::new(handle));
+        self.garbage.push(AtomicUsize::new(index));
+    }
+
+    /// Alter registration of `WakeHandle`
+    pub(crate) fn registration(
+        &self,
+        handle: &mut WakeHandle,
+        waker: impl Into<Option<Waker>>,
+    ) {
+        let waker = waker.into();
+
+        if let Some(waker) = waker {
+            if handle.index().is_some() {
+                self.reregister(handle, waker);
+            } else {
+                *handle = self.register(waker);
+            }
+        } else {
+            self.unregister(handle);
+        }
     }
 
     /// Attempt to wake one task

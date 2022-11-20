@@ -88,10 +88,15 @@
 
 extern crate alloc;
 
+#[allow(unsafe_code)]
+mod mutex;
+#[allow(unsafe_code)]
+mod wake_list;
+
 use alloc::sync::Arc;
 use core::{
     cell::Cell,
-    future::Future,
+    future::{self, Future},
     pin::Pin,
     task::{
         Context,
@@ -99,10 +104,7 @@ use core::{
     },
 };
 
-#[allow(unsafe_code)]
-mod mutex;
-#[allow(unsafe_code)]
-mod wake_list;
+use self::wake_list::{WakeHandle, WakeList};
 
 /// A `Queue` can send messages to itself, and can be shared between threads
 /// and tasks.
@@ -116,9 +118,9 @@ mod wake_list;
 /// [`Notifier`](pasts::Notifier).
 pub struct Queue<T = (), U: ?Sized = ()> {
     /// Receive wakers
-    recv: wake_list::WakeList,
+    recv: WakeList,
     /// Send wakers
-    send: wake_list::WakeList,
+    send: WakeList,
     /// Data in transit
     data: mutex::Mutex<Option<T>>,
     /// User data
@@ -170,17 +172,15 @@ impl<T, U: ?Sized> Queue<T, U> {
     /// Send a message on this channel.
     #[inline(always)]
     pub async fn send(&self, message: T) {
-        Message(self, Cell::new(Some(message))).await
-    }
-
-    /// Receive a message from this channel.
-    #[inline(always)]
-    pub async fn recv(&self) -> T {
-        core::future::poll_fn(|cx| self.poll_internal(cx)).await
+        Message(self, Cell::new(Some(message)), WakeHandle::default()).await
     }
 
     // Internal asynchronous receive implementation
-    fn poll_internal(&self, cx: &mut Context<'_>) -> Poll<T> {
+    fn poll_internal(
+        &self,
+        cx: &mut Context<'_>,
+        wake: &mut WakeHandle,
+    ) -> Poll<T> {
         let waker = cx.waker();
         // FIXME Registration happens while owned to avoid data race
         let poll = self.data.try_with(|inner| {
@@ -188,7 +188,7 @@ impl<T, U: ?Sized> Queue<T, U> {
                 Ready(output)
             } else {
                 // Nothing is available yet, register waker for when it is
-                self.recv.register(waker.clone());
+                self.recv.registration(wake, waker.clone());
                 Pending
             }
         });
@@ -202,40 +202,14 @@ impl<T, U: ?Sized> Queue<T, U> {
     }
 }
 
-impl<T, U: ?Sized> Future for &Queue<T, U> {
-    type Output = T;
-
-    #[inline(always)]
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<T> {
-        self.poll_internal(cx)
-    }
-}
-
-#[cfg(feature = "pasts")]
-impl<T, U: ?Sized> pasts::Notifier for &Queue<T, U> {
-    type Event = T;
-
-    #[inline(always)]
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<T> {
-        self.poll_internal(cx)
-    }
-}
-
-#[cfg(feature = "futures-core")]
-impl<T, U: ?Sized> futures_core::Stream for &Queue<Option<T>, U> {
-    type Item = T;
-
-    #[inline(always)]
-    fn poll_next(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<T>> {
-        self.poll_internal(cx)
-    }
-}
-
 /// A message in the process of being sent over a [`Queue`].
-struct Message<'a, T, U: ?Sized>(&'a Queue<T, U>, Cell<Option<T>>);
+struct Message<'a, T, U: ?Sized>(&'a Queue<T, U>, Cell<Option<T>>, WakeHandle);
+
+impl<T, U: ?Sized> Drop for Message<'_, T, U> {
+    fn drop(&mut self) {
+        self.0.send.registration(&mut self.2, None);
+    }
+}
 
 #[allow(unsafe_code)]
 impl<T, U: ?Sized> Message<'_, T, U> {
@@ -244,27 +218,47 @@ impl<T, U: ?Sized> Message<'_, T, U> {
         // This is okay because `1` is pinned when `self` is.
         unsafe { self.map_unchecked(|s| &s.1) }
     }
+
+    #[inline(always)]
+    fn pin_get_wh(self: Pin<&mut Self>) -> Pin<&mut WakeHandle> {
+        // This is okay because `1` is pinned when `self` is.
+        unsafe { self.map_unchecked_mut(|s| &mut s.2) }
+    }
 }
 
 impl<T, U: ?Sized> Future for Message<'_, T, U> {
     type Output = ();
 
     #[inline]
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = Pin::new(&self).get_ref();
+    fn poll(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Self::Output> {
         let waker = cx.waker();
         // FIXME Registration happens while owned to avoid data race
-        let poll = this.0.data.try_with(|inner| {
+        let poll = self.0.data.try_with(|inner| {
             if let Some(shared) = inner {
                 if shared.is_none() {
-                    *shared = this.as_ref().pin_get().take();
+                    *shared = self.as_ref().pin_get().take();
                     Ready(())
                 } else {
-                    this.0.send.register(waker.clone());
+                    let mut wh = WakeHandle::default();
+                    core::mem::swap(
+                        &mut wh,
+                        self.as_mut().pin_get_wh().get_mut(),
+                    );
+                    self.0.send.registration(&mut wh, waker.clone());
+                    core::mem::swap(
+                        &mut wh,
+                        self.as_mut().pin_get_wh().get_mut(),
+                    );
                     Pending
                 }
             } else {
-                this.0.send.register(waker.clone());
+                let mut wh = WakeHandle::default();
+                core::mem::swap(&mut wh, self.as_mut().pin_get_wh().get_mut());
+                self.0.send.registration(&mut wh, waker.clone());
+                core::mem::swap(&mut wh, self.as_mut().pin_get_wh().get_mut());
                 Pending
             }
         });
@@ -272,7 +266,7 @@ impl<T, U: ?Sized> Future for Message<'_, T, U> {
         // Any waking happens after the data is released
         poll.map(|x| {
             // Now that data has been written, possibly wake a receiver
-            this.0.recv.wake_one();
+            self.0.recv.wake_one();
             x
         })
     }
@@ -307,7 +301,10 @@ impl<T, U: ?Sized> Channel<T, U> {
     /// Receive a message from this channel.
     #[inline(always)]
     pub async fn recv(&self) -> T {
-        self.0.recv().await
+        let mut wh = WakeHandle::default();
+        let out = future::poll_fn(|cx| self.0.poll_internal(cx, &mut wh)).await;
+        self.0.recv.registration(&mut wh, None);
+        out
     }
 
     /// Get the internal [`Arc`] out from the channel.
@@ -348,3 +345,37 @@ impl<T, U: ?Sized> core::ops::Deref for Channel<T, U> {
         &self.0.user
     }
 }
+
+/*
+impl<T, U: ?Sized> Future for Channel<T, U> {
+    type Output = T;
+
+    #[inline(always)]
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<T> {
+        self.0.poll_internal(cx, &self.1)
+    }
+}
+
+#[cfg(feature = "pasts")]
+impl<T, U: ?Sized> pasts::Notifier for Channel<T, U> {
+    type Event = T;
+
+    #[inline(always)]
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<T> {
+        self.0.poll_internal(cx, &mut self.1)
+    }
+}
+
+#[cfg(feature = "futures-core")]
+impl<T, U: ?Sized> futures_core::Stream for Channel<Option<T>, U> {
+    type Item = T;
+
+    #[inline(always)]
+    fn poll_next(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<T>> {
+        self.0.poll_internal(cx, &mut self.1)
+    }
+}
+*/
