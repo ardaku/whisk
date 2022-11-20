@@ -182,14 +182,29 @@ impl<T, U: ?Sized> Queue<T, U> {
         wake: &mut WakeHandle,
     ) -> Poll<T> {
         let waker = cx.waker();
-        // FIXME Registration happens while owned to avoid data race
         let poll = self.data.try_with(|inner| {
-            if let Some(output) = inner.map(|x| x.take()).flatten() {
-                Ready(output)
+            if let Some(shared) = inner {
+                if let Some(output) = shared.take() {
+                    Ready(output)
+                } else {
+                    // Nothing is available yet, register waker for when it is
+                    // Registration happens while owned to avoid data race
+                    wake.register(&self.recv, waker.clone());
+                    Pending
+                }
             } else {
-                // Nothing is available yet, register waker for when it is
+                // Data is contended, register and try again
                 wake.register(&self.recv, waker.clone());
-                Pending
+                self.data.try_with(|inner| {
+                    if let Some(shared) = inner {
+                        if let Some(output) = shared.take() {
+                            // Unregister
+                            *wake = WakeHandle::new();
+                            return Ready(output);
+                        }
+                    }
+                    Pending
+                })
             }
         });
 
@@ -229,25 +244,50 @@ impl<T, U: ?Sized> Future for Message<'_, T, U> {
         cx: &mut Context<'_>,
     ) -> Poll<Self::Output> {
         let waker = cx.waker();
-        // FIXME Registration happens while owned to avoid data race
         let poll = self.0.data.try_with(|inner| {
             if let Some(shared) = inner {
                 if shared.is_none() {
+                    // Buffer has space, write to it
                     *shared = self.as_ref().pin_get().take();
-                    /*let mut wh = WakeHandle::new();
+                    Ready(())
+                } else {
+                    // Registering while locked to avoid data race
+                    let mut wh = WakeHandle::new();
                     core::mem::swap(
                         &mut wh,
                         self.as_mut().pin_get_wh().get_mut(),
-                    );*/
-                    return Ready(());
+                    );
+                    wh.register(&self.0.send, waker.clone());
+                    core::mem::swap(
+                        &mut wh,
+                        self.as_mut().pin_get_wh().get_mut(),
+                    );
+                    Pending
                 }
-            }
+            } else {
+                // Data is contended, register and try again
+                let mut wh = WakeHandle::new();
+                core::mem::swap(&mut wh, self.as_mut().pin_get_wh().get_mut());
+                wh.register(&self.0.send, waker.clone());
+                core::mem::swap(&mut wh, self.as_mut().pin_get_wh().get_mut());
+                self.0.data.try_with(|inner| {
+                    if let Some(shared) = inner {
+                        if shared.is_none() {
+                            // Buffer has space, write to it
+                            *shared = self.as_ref().pin_get().take();
+                            // Unregister
+                            let mut wh = WakeHandle::new();
+                            core::mem::swap(
+                                &mut wh,
+                                self.as_mut().pin_get_wh().get_mut(),
+                            );
+                            return Ready(());
+                        }
+                    }
 
-            let mut wh = WakeHandle::new();
-            core::mem::swap(&mut wh, self.as_mut().pin_get_wh().get_mut());
-            wh.register(&self.0.send, waker.clone());
-            core::mem::swap(&mut wh, self.as_mut().pin_get_wh().get_mut());
-            Pending
+                    Pending
+                })
+            }
         });
 
         // Any waking happens after the data is released
