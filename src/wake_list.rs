@@ -1,173 +1,197 @@
 use alloc::boxed::Box;
 use core::{
     cell::UnsafeCell,
-    num::NonZeroUsize,
+    mem::MaybeUninit,
     ptr,
     sync::atomic::{
-        AtomicBool, AtomicPtr, AtomicUsize,
-        Ordering::{Acquire, Relaxed, Release, SeqCst},
+        AtomicPtr, AtomicUsize,
+        Ordering::{Relaxed, SeqCst},
     },
     task::Waker,
 };
 
-/// Handle to an optional waker
-#[derive(Default)]
-pub(crate) struct WakeHandle(Option<NonZeroUsize>);
+/// Status of wake node
+#[repr(usize)]
+enum WakeState {
+    /// Waiting to be re-allocated
+    Garbage = 0,
+    /// Waiting for registration
+    Empty = 1,
+    /// Ready to be awoken (contains waker)
+    Ready = 2,
+    /// 1 task can register at a time (in the process of getting a waker)
+    Registering = 3,
+    /// Multiple tasks could be waking (in the process of waking, losing waker)
+    Waking = 4,
+    /// Registration is being canceled by waking
+    Canceling = 5,
+    /// Waiting to become garbage
+    Freeing = 6,
+}
 
-impl WakeHandle {
-    /// Get the index into the wakelist
-    fn index(&self) -> Option<usize> {
-        self.0.map(|index| usize::from(index) - 1)
+struct WakeNode {
+    /// Atomic `WakeState` for waker
+    state: AtomicUsize,
+    /// Waker and a fallback waker
+    waker: UnsafeCell<MaybeUninit<Waker>>,
+}
+
+impl WakeNode {
+    /// Try to allocate wake node
+    fn allocate(&self) -> Result<*const WakeNode, ()> {
+        self.state
+            .compare_exchange(
+                WakeState::Garbage as usize,
+                WakeState::Empty as usize,
+                SeqCst,
+                SeqCst,
+            )
+            .map_err(|_| ())
+            .map(|_| -> *const WakeNode { self })
+    }
+
+    /// Register a new waker
+    ///
+    /// Slots can be Empty, Ready or Waking (If Waking, wakes immediately)
+    fn register(&self, waker: Waker) {
+        // Attempt to clear first slot and begin registering
+        let r = self
+            .state
+            .fetch_update(SeqCst, SeqCst, |state| match state {
+                // Switch to registering state
+                x if x == WakeState::Empty as usize => {
+                    Some(WakeState::Registering as usize)
+                }
+                // Switch to registering state, dropping previous waker
+                x if x == WakeState::Ready as usize => {
+                    Some(WakeState::Registering as usize)
+                }
+                // Contention with waking, re-wake immediately
+                x if x == WakeState::Waking as usize => None,
+                _ => unreachable!(),
+            });
+
+        // Set waker and mark ready
+        match r {
+            Ok(prev) => {
+                // Drop before overwriting
+                if prev == WakeState::Ready as usize {
+                    unsafe { (*self.waker.get()).assume_init_drop() }
+                }
+
+                // Use first waker slot and set to ready for waking
+                unsafe { *self.waker.get() = MaybeUninit::new(waker) };
+
+                // Finish, checking if canceled
+                let r =
+                    self.state.fetch_update(
+                        SeqCst,
+                        SeqCst,
+                        |state| match state {
+                            // Switch to registering state
+                            x if x == WakeState::Registering as usize => {
+                                Some(WakeState::Ready as usize)
+                            }
+                            // Switch to registering state
+                            x if x == WakeState::Canceling as usize => None,
+                            _ => unreachable!(),
+                        },
+                    );
+                if r.is_err() {
+                    unsafe { (*self.waker.get()).assume_init_read().wake() }
+                    self.state.store(WakeState::Empty as usize, SeqCst);
+                }
+            }
+            Err(_) => waker.wake(),
+        }
+    }
+
+    /// Try to wake this node
+    ///
+    /// If already waking, won't wake again
+    fn wake(&self) -> Result<(), ()> {
+        let r = self
+            .state
+            .fetch_update(SeqCst, SeqCst, |state| match state {
+                // Ready to be awoken
+                x if x == WakeState::Ready as usize => {
+                    Some(WakeState::Waking as usize)
+                }
+                // Currently registering, wake now
+                x if x == WakeState::Registering as usize => {
+                    Some(WakeState::Canceling as usize)
+                }
+                // Not wakeable
+                _ => None,
+            })
+            .map_err(|_| ())?;
+        if r == WakeState::Registering as usize {
+            return Ok(());
+        }
+
+        // Take and wake the waker
+        unsafe { (*self.waker.get()).assume_init_read().wake() };
+
+        // Update state
+        self.state
+            .fetch_update(SeqCst, SeqCst, |state| match state {
+                x if x == WakeState::Waking as usize => {
+                    Some(WakeState::Empty as usize)
+                }
+                x if x == WakeState::Freeing as usize => {
+                    Some(WakeState::Garbage as usize)
+                }
+                _ => unreachable!(),
+            })
+            .map(|_| ())
+            .map_err(|_| ())
+    }
+
+    /// Free this wake node (must be done on registration task)
+    fn free(&self) {
+        match self.state.swap(WakeState::Freeing as usize, SeqCst) {
+            x if x == WakeState::Empty as usize => {}
+            x if x == WakeState::Ready as usize => {
+                unsafe { (*self.waker.get()).assume_init_drop() };
+            }
+            x if x == WakeState::Waking as usize => return,
+            _ => unreachable!(),
+        }
+
+        self.state.store(WakeState::Garbage as usize, SeqCst);
     }
 }
 
-/// A `WakeList` stores append-only atomic linked lists of wakers and garbage
-pub(crate) struct WakeList {
-    // List of wakers (eventually will be able to use `AtomicMaybeWaker`)
-    wakers: AtomicLinkedList<(AtomicBool, UnsafeCell<Option<Waker>>)>,
-    // List of garbage
-    garbage: AtomicLinkedList<AtomicUsize>,
-    // Next handle ID / length of wakers list
-    size: AtomicUsize,
-    // Next one to wake
-    next: AtomicUsize,
-}
+/// Handle to an optional waker node
+pub(crate) struct WakeHandle(*const WakeNode);
 
-impl WakeList {
-    /// Create a new wake list
-    pub(crate) const fn new() -> Self {
-        let wakers = AtomicLinkedList::new();
-        let garbage = AtomicLinkedList::new();
-        let size = AtomicUsize::new(0);
-        let next = AtomicUsize::new(0);
+unsafe impl Send for WakeHandle {}
+unsafe impl Sync for WakeHandle {}
 
-        Self {
-            wakers,
-            garbage,
-            size,
-            next,
-        }
+impl WakeHandle {
+    /// Create a new mock handle
+    pub(crate) fn new() -> Self {
+        Self(ptr::null())
     }
 
     /// Register a waker
-    pub(crate) fn register(&self, waker: Waker) -> WakeHandle {
-        let waker = Some(waker);
-
-        // Check garbage for reuse
-        let garbage = 'garbage: {
-            for garbage in self.garbage.iter() {
-                if let Some(wh) =
-                    NonZeroUsize::new(garbage.fetch_and(0, Relaxed))
-                {
-                    let handle = WakeHandle(Some(wh));
-                    let wakey = self
-                        .wakers
-                        .iter()
-                        .nth(handle.index().unwrap())
-                        .unwrap();
-
-                    // Only if non-contended (AtomicBool could be true)
-                    if !wakey.0.load(Acquire) {
-                        break 'garbage Some((wakey, handle));
-                    }
-                }
-            }
-            None
-        };
-
-        // Add waker to the list and get its index as a handle
-        if let Some((wakey, handle)) = garbage {
-            // Replace existing
-            unsafe { *wakey.1.get() = waker };
-
-            handle
-        } else {
-            // If no garbage exists, push new pair
-            self.wakers
-                .push((AtomicBool::new(false), UnsafeCell::new(waker)));
-
-            WakeHandle(NonZeroUsize::new(self.size.fetch_add(1, Relaxed)))
+    pub(crate) fn register(&mut self, wl: &WakeList, waker: Waker) {
+        // Allocate a waker if needed
+        if self.0.is_null() {
+            self.0 = wl.allocate();
         }
+
+        // Register the waker
+        unsafe { (*self.0).register(waker) }
     }
+}
 
-    /// Re-register a `WakeHandle` with a new `Waker`.
-    pub(crate) fn reregister(&self, handle: &mut WakeHandle, waker: Waker) {
-        let wakey = self.wakers.iter().nth(handle.index().unwrap()).unwrap();
-
-        if !wakey.0.fetch_or(true, Acquire) {
-            // Non-contended, update
-            unsafe { *wakey.1.get() = Some(waker) };
-            wakey.0.fetch_and(false, Release);
-        } else {
-            // Contended, unregister and register again
-            self.unregister(handle);
-            *handle = self.register(waker);
+impl Drop for WakeHandle {
+    fn drop(&mut self) {
+        // Unregister the waker if set
+        if !self.0.is_null() {
+            unsafe { (*self.0).free() }
         }
-    }
-
-    /// Clean up wake handle
-    pub(crate) fn unregister(&self, handle: &mut WakeHandle) {
-        // Add to garbage
-        let Some(index) = handle.index() else { return };
-
-        // Go through existing slots, looking for an empty one
-        for garbage in self.garbage.iter() {
-            if garbage.compare_exchange(0, index, Relaxed, Relaxed).is_ok() {
-                // Added to garbage successfully
-                return;
-            }
-        }
-
-        // Garbage is out of space, allocate new node
-        self.garbage.push(AtomicUsize::new(index));
-    }
-
-    /// Alter registration of `WakeHandle`
-    pub(crate) fn registration(
-        &self,
-        handle: &mut WakeHandle,
-        waker: impl Into<Option<Waker>>,
-    ) {
-        let waker = waker.into();
-
-        if let Some(waker) = waker {
-            if handle.index().is_some() {
-                self.reregister(handle, waker);
-            } else {
-                *handle = self.register(waker);
-            }
-        } else {
-            self.unregister(handle);
-        }
-    }
-
-    /// Attempt to wake one task
-    pub(crate) fn wake_one(&self) {
-        // Starting index, goes until end then wraps around
-        let which = self.next.load(Relaxed);
-        let len = self.size.load(Relaxed).max(1);
-
-        'untilone: {
-            for wakey in self
-                .wakers
-                .iter()
-                .skip(which)
-                .chain(self.wakers.iter().take(which))
-            {
-                if !wakey.0.fetch_or(true, Acquire) {
-                    if let Some(waker) = unsafe { (*wakey.1.get()).take() } {
-                        waker.wake();
-                        wakey.0.fetch_and(false, Release);
-                        break 'untilone;
-                    }
-                    wakey.0.fetch_and(false, Release);
-                }
-            }
-        }
-
-        let _ = self
-            .next
-            .fetch_update(Relaxed, Relaxed, |old| Some((old + 1) % len));
     }
 }
 
@@ -176,104 +200,87 @@ struct Node<T> {
     data: T,
 }
 
-struct AtomicLinkedList<T> {
-    root: AtomicPtr<Node<T>>,
+/// A `WakeList` stores an append-only atomic linked list of wakers
+pub(crate) struct WakeList {
+    // Root node of list of wakers
+    root: AtomicPtr<Node<WakeNode>>,
+    // Next one to try waking ("fairness" mechanism)
+    next: AtomicPtr<Node<WakeNode>>,
 }
 
-impl<T> Drop for AtomicLinkedList<T> {
+impl Drop for WakeList {
     fn drop(&mut self) {
         let mut tmp = self.root.load(Relaxed);
 
-        loop {
-            if tmp.is_null() {
-                return;
-            }
+        while !tmp.is_null() {
             let node = unsafe { Box::from_raw(tmp) };
             tmp = node.next.load(Relaxed);
         }
     }
 }
 
-impl<T> AtomicLinkedList<T> {
-    const fn new() -> Self {
-        let root = AtomicPtr::new(ptr::null_mut());
-
-        Self { root }
+impl WakeList {
+    /// Create a new empty wake list
+    pub(crate) const fn new() -> Self {
+        Self {
+            root: AtomicPtr::new(ptr::null_mut()),
+            next: AtomicPtr::new(ptr::null_mut()),
+        }
     }
 
-    fn push(&self, data: T) -> usize {
-        let nul = ptr::null_mut();
-        let next = AtomicPtr::new(nul);
+    /// Attempt to wake one waker.
+    ///
+    /// If no wakers are registered, doesn't do anything.
+    pub(crate) fn wake_one(&self) {
+        // Start from next pointer into list
+        let next = self.next.load(SeqCst);
+        let mut tmp = next;
+        while !tmp.is_null() {
+            let next = unsafe { (*tmp).next.load(Relaxed) };
+            if unsafe { (*tmp).data.wake().is_ok() } {
+                self.next.store(next, SeqCst);
+                return;
+            }
+            tmp = next;
+        }
+
+        // Start back at beginning of list
+        tmp = self.root.load(SeqCst);
+        while tmp != next {
+            let next = unsafe { (*tmp).next.load(Relaxed) };
+            if unsafe { (*tmp).data.wake().is_ok() } {
+                self.next.store(next, SeqCst);
+                return;
+            }
+            tmp = next;
+        }
+    }
+
+    /// Allocate a new `WakeNode`
+    fn allocate(&self) -> *const WakeNode {
+        // Go through list to see if unused existing allocation to use
+        let mut tmp = self.root.load(SeqCst);
+        while !tmp.is_null() {
+            if let Ok(wn) = unsafe { (*tmp).data.allocate() } {
+                return wn;
+            }
+            tmp = unsafe { (*tmp).next.load(Relaxed) };
+        }
+
+        // Push to front
+        let data = WakeNode {
+            state: AtomicUsize::new(WakeState::Empty as usize),
+            waker: UnsafeCell::new(MaybeUninit::uninit()),
+        };
+        let mut root = self.root.load(SeqCst);
+        let next = AtomicPtr::new(self.root.load(SeqCst));
         let node = Box::into_raw(Box::new(Node { next, data }));
-        let mut count = 0;
-        let mut ptr = self.root.load(Relaxed);
-
-        // If empty, try to write at root node
-        if ptr.is_null() {
-            if let Err(p) =
-                self.root.compare_exchange(nul, node, SeqCst, Relaxed)
-            {
-                // Handle contention, push next slot
-                ptr = p;
-                count += 1;
-                while let Err(p) = unsafe {
-                    (*ptr).next.compare_exchange(nul, node, SeqCst, Relaxed)
-                } {
-                    // Handle contention, push next slot
-                    ptr = p;
-                    count += 1;
-                }
-            }
-            return count;
-        }
-
-        // Go to end of list (functionally unnecessary, but faster in theory)
-        loop {
-            let tmp = unsafe { (*ptr).next.load(Relaxed) };
-            if tmp.is_null() {
-                break;
-            }
-            ptr = tmp;
-            count += 1;
-        }
-
-        // Push at end of list
-        while let Err(p) =
-            unsafe { (*ptr).next.compare_exchange(nul, node, SeqCst, Relaxed) }
+        while let Err(r) =
+            self.root.compare_exchange(root, node, SeqCst, Relaxed)
         {
-            // Handle contention, push next slot
-            ptr = p;
-            count += 1;
+            root = r;
+            unsafe { (*node).next = AtomicPtr::new(root) };
         }
-        count
-    }
-
-    fn iter(&self) -> AtomicLinkedListIter<'_, T> {
-        AtomicLinkedListIter {
-            _all: self,
-            next: self.root.load(Relaxed),
-        }
-    }
-}
-
-struct AtomicLinkedListIter<'a, T> {
-    _all: &'a AtomicLinkedList<T>,
-    next: *mut Node<T>,
-}
-
-impl<'a, T> Iterator for AtomicLinkedListIter<'a, T> {
-    type Item = &'a T;
-
-    fn next(&mut self) -> Option<&'a T> {
-        if self.next.is_null() {
-            return None;
-        }
-
-        let ret: *const T = unsafe { &(*self.next).data };
-
-        // Advance
-        self.next = unsafe { (*self.next).next.load(Relaxed) };
-
-        Some(unsafe { &*ret })
+        unsafe { &(*node).data }
     }
 }

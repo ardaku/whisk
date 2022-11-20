@@ -172,7 +172,7 @@ impl<T, U: ?Sized> Queue<T, U> {
     /// Send a message on this channel.
     #[inline(always)]
     pub async fn send(&self, message: T) {
-        Message(self, Cell::new(Some(message)), WakeHandle::default()).await
+        Message(self, Cell::new(Some(message)), WakeHandle::new()).await
     }
 
     // Internal asynchronous receive implementation
@@ -188,7 +188,7 @@ impl<T, U: ?Sized> Queue<T, U> {
                 Ready(output)
             } else {
                 // Nothing is available yet, register waker for when it is
-                self.recv.registration(wake, waker.clone());
+                wake.register(&self.recv, waker.clone());
                 Pending
             }
         });
@@ -204,12 +204,6 @@ impl<T, U: ?Sized> Queue<T, U> {
 
 /// A message in the process of being sent over a [`Queue`].
 struct Message<'a, T, U: ?Sized>(&'a Queue<T, U>, Cell<Option<T>>, WakeHandle);
-
-impl<T, U: ?Sized> Drop for Message<'_, T, U> {
-    fn drop(&mut self) {
-        self.0.send.registration(&mut self.2, None);
-    }
-}
 
 #[allow(unsafe_code)]
 impl<T, U: ?Sized> Message<'_, T, U> {
@@ -240,27 +234,20 @@ impl<T, U: ?Sized> Future for Message<'_, T, U> {
             if let Some(shared) = inner {
                 if shared.is_none() {
                     *shared = self.as_ref().pin_get().take();
-                    Ready(())
-                } else {
-                    let mut wh = WakeHandle::default();
+                    /*let mut wh = WakeHandle::new();
                     core::mem::swap(
                         &mut wh,
                         self.as_mut().pin_get_wh().get_mut(),
-                    );
-                    self.0.send.registration(&mut wh, waker.clone());
-                    core::mem::swap(
-                        &mut wh,
-                        self.as_mut().pin_get_wh().get_mut(),
-                    );
-                    Pending
+                    );*/
+                    return Ready(());
                 }
-            } else {
-                let mut wh = WakeHandle::default();
-                core::mem::swap(&mut wh, self.as_mut().pin_get_wh().get_mut());
-                self.0.send.registration(&mut wh, waker.clone());
-                core::mem::swap(&mut wh, self.as_mut().pin_get_wh().get_mut());
-                Pending
             }
+
+            let mut wh = WakeHandle::new();
+            core::mem::swap(&mut wh, self.as_mut().pin_get_wh().get_mut());
+            wh.register(&self.0.send, waker.clone());
+            core::mem::swap(&mut wh, self.as_mut().pin_get_wh().get_mut());
+            Pending
         });
 
         // Any waking happens after the data is released
@@ -275,17 +262,11 @@ impl<T, U: ?Sized> Future for Message<'_, T, U> {
 /// An MPMC channel with both send and receive capabilities
 pub struct Channel<T = (), U: ?Sized = ()>(Arc<Queue<T, U>>, WakeHandle);
 
-impl<T, U: ?Sized> Drop for Channel<T, U> {
-    fn drop(&mut self) {
-        self.0.recv.registration(&mut self.1, None);
-    }
-}
-
 impl<T> Channel<T> {
     /// Create a new channel.
     #[inline(always)]
     pub fn new() -> Self {
-        Self(Arc::new(Queue::new()), WakeHandle::default())
+        Self(Arc::new(Queue::new()), WakeHandle::new())
     }
 }
 
@@ -307,28 +288,26 @@ impl<T, U: ?Sized> Channel<T, U> {
     /// Receive a message from this channel.
     #[inline(always)]
     pub async fn recv(&self) -> T {
-        let mut wh = WakeHandle::default();
-        let out = future::poll_fn(|cx| self.0.poll_internal(cx, &mut wh)).await;
-        self.0.recv.registration(&mut wh, None);
-        out
+        let mut wh = WakeHandle::new();
+        future::poll_fn(|cx| self.0.poll_internal(cx, &mut wh)).await
     }
 
     /// Get the internal [`Arc`] out from the channel.
     #[inline(always)]
     pub fn into_inner(self) -> Arc<Queue<T, U>> {
-        self.0.clone()
+        self.0
     }
 
     /// Create a new channel from a [`Queue`] wrapped in an [`Arc`].
     #[inline(always)]
     pub fn from_inner(inner: Arc<Queue<T, U>>) -> Self {
-        Self(inner, WakeHandle::default())
+        Self(inner, WakeHandle::new())
     }
 }
 
 impl<T, U: ?Sized> Clone for Channel<T, U> {
     fn clone(&self) -> Self {
-        Self(Arc::clone(&self.0), WakeHandle::default())
+        Self(Arc::clone(&self.0), WakeHandle::new())
     }
 }
 
