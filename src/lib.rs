@@ -86,6 +86,7 @@
 )]
 #![deny(unsafe_code)]
 
+extern crate std;
 extern crate alloc;
 
 #[allow(unsafe_code)]
@@ -195,6 +196,8 @@ impl<T, U: ?Sized> Queue<T, U> {
             } else {
                 // Data is contended, register and try again
                 wake.register(&self.recv, waker.clone());
+
+                core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
                 self.data.try_with(|inner| {
                     if let Some(shared) = inner {
                         if let Some(output) = shared.take() {
@@ -203,6 +206,7 @@ impl<T, U: ?Sized> Queue<T, U> {
                             return Ready(output);
                         }
                     }
+                    std::println!("ContendPendA");
                     Pending
                 })
             }
@@ -211,6 +215,7 @@ impl<T, U: ?Sized> Queue<T, U> {
         // Any waking happens after the data is released
         poll.map(|x| {
             // Now that space is available, possibly wake a sender
+            std::println!("Waking sender");
             self.send.wake_one();
             x
         })
@@ -270,6 +275,9 @@ impl<T, U: ?Sized> Future for Message<'_, T, U> {
                 core::mem::swap(&mut wh, self.as_mut().pin_get_wh().get_mut());
                 wh.register(&self.0.send, waker.clone());
                 core::mem::swap(&mut wh, self.as_mut().pin_get_wh().get_mut());
+
+                core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+
                 self.0.data.try_with(|inner| {
                     if let Some(shared) = inner {
                         if shared.is_none() {
@@ -282,7 +290,11 @@ impl<T, U: ?Sized> Future for Message<'_, T, U> {
                                 self.as_mut().pin_get_wh().get_mut(),
                             );
                             return Ready(());
+                        } else {
+                            std::println!("ContendPend2 b");
                         }
+                    } else {
+                        std::println!("ContendPend3 b");
                     }
 
                     Pending
@@ -291,10 +303,10 @@ impl<T, U: ?Sized> Future for Message<'_, T, U> {
         });
 
         // Any waking happens after the data is released
-        poll.map(|x| {
+        poll.map(|()| {
+            std::println!("Waking receiver");
             // Now that data has been written, possibly wake a receiver
             self.0.recv.wake_one();
-            x
         })
     }
 }

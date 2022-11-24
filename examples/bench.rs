@@ -11,10 +11,12 @@ enum Cmd {
 
 async fn worker(channel: Channel<Option<Cmd>>) {
     while let Some(command) = channel.recv().await {
+        println!("u");
         match command {
             Cmd::Cos(a, s) => s.send(libm::cosf(a)).await,
         }
     }
+    println!("dink");
 }
 
 async fn worker_flume(tasker: flume::Receiver<Cmd>) {
@@ -36,18 +38,22 @@ async fn tasker_multi() {
 
     let channel = Channel::new();
     for _ in 1..=1024 {
+        println!("sendy");
         worker.send(Some(Cmd::Cos(750.0, channel.clone()))).await;
         channel.recv().await;
     }
     let now = Instant::now();
-    for _ in 1..=1024 * 256 {
+    for i in 1..=1024 * 256 {
+        println!("sendy3 {i}");
         worker.send(Some(Cmd::Cos(750.0, channel.clone()))).await;
+        println!("rency3 {i}");
         channel.recv().await;
     }
     let elapsed = now.elapsed() / (1024 * 256);
     println!("Whisk (2-thread): {:?}", elapsed);
 
     // Tell worker to stop
+    println!("stopy");
     worker.send(None).await;
     worker_thread.join().unwrap();
 }
@@ -68,11 +74,13 @@ async fn tasker_single(executor: &Executor) {
 
     let channel = Channel::new();
     for _ in 1..=1024 {
+        println!("sendy2");
         worker.send(Some(Cmd::Cos(750.0, channel.clone()))).await;
         channel.recv().await;
     }
     let now = Instant::now();
     for _ in 1..=1024 * 256 {
+        println!("sendy32");
         worker.send(Some(Cmd::Cos(750.0, channel.clone()))).await;
         channel.recv().await;
     }
@@ -80,6 +88,7 @@ async fn tasker_single(executor: &Executor) {
     println!("Whisk (1-thread): {:?}", elapsed);
 
     // Tell worker to stop
+    println!("stopy2");
     worker.send(None).await;
     join.recv().await;
 }
