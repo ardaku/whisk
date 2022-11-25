@@ -55,13 +55,19 @@ impl<T> Mutex<T> {
             // Try again just in case registration is unnecessary
             if self.lock.swap(true, Acquire) {
                 // Will be awoken
+                std::println!("Store bed 1");
                 return Poll::Pending;
             } else {
                 // Locked, and registered
                 // If can't send until receive
                 if unsafe { (*self.data.get()).is_some() } {
                     // Release lock
+                    std::println!("Release store lock 2");
                     self.lock.store(false, Release);
+                    std::println!("Store bed 2");
+                    // Wake a receiver
+                    std::println!("Waking receiver");
+                    self.recv.wake_one();
                     return Poll::Pending;
                 }
 
@@ -75,7 +81,12 @@ impl<T> Mutex<T> {
                 // Register
                 wh.register(&self.send, cx.waker().clone());
                 // Release lock
+                std::println!("Release store lock 3");
                 self.lock.store(false, Release);
+                std::println!("Store bed 3");
+                // Wake a receiver
+                std::println!("Waking receiver");
+                self.recv.wake_one();
                 return Poll::Pending;
             }
         }
@@ -84,9 +95,11 @@ impl<T> Mutex<T> {
         unsafe { (*self.data.get()) = data.take() };
 
         // Release lock
+        std::println!("Releasing send lock");
         self.lock.store(false, Release);
 
         // Wake a receiver
+        std::println!("Waking receiver");
         self.recv.wake_one();
 
         Poll::Ready(())
@@ -106,13 +119,19 @@ impl<T> Mutex<T> {
             // Try again just in case registration is unnecessary
             if self.lock.swap(true, Acquire) {
                 // Will be awoken
+                std::println!("Take bed 1");
                 return Poll::Pending;
             } else {
                 // Locked, and registered
                 // If can't receive until send
                 if unsafe { (*self.data.get()).is_none() } {
                     // Release lock
+                    std::println!("Release take lock 2");
                     self.lock.store(false, Release);
+                    std::println!("Take bed 2");
+                    // Wake a sender
+                    std::println!("Waking a sender");
+                    self.send.wake_one();
                     return Poll::Pending;
                 }
 
@@ -125,7 +144,12 @@ impl<T> Mutex<T> {
                 // Register
                 wh.register(&self.recv, cx.waker().clone());
                 // Release lock
+                std::println!("Releasing recv lock (3)");
                 self.lock.store(false, Release);
+                std::println!("Take bed 3");
+                // Wake a sender
+                std::println!("Waking a sender");
+                self.send.wake_one();
                 return Poll::Pending;
             }
         }
@@ -138,9 +162,11 @@ impl<T> Mutex<T> {
         };
 
         // Release lock
+        std::println!("Releasing recv lock");
         self.lock.store(false, Release);
 
         // Wake a sender
+        std::println!("Waking a sender");
         self.send.wake_one();
 
         // Return `Ready(_)`
