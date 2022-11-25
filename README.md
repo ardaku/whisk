@@ -15,7 +15,7 @@ lines of Rust code, with zero dependencies (not including feature flags to
 enable implementation of traits from other crates) - and also works on `no_std`!
 
 ## MSRV
-Whisk targets Rust 1.64 and later.
+Whisk targets Rust 1.65 and later.
 
 ## Benchmarks
 Benchmarks for v0.8.0 actor on pasts runtime (compared to dynamic library):

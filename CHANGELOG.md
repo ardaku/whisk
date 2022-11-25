@@ -4,6 +4,26 @@ All notable changes to `whisk` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://github.com/AldaronLau/semver).
 
+## [0.9.0] - Unreleased
+### Added
+ - Implement `From` converting `Arc<Queue>` to `Channel`
+ - Implement `From` converting `Channel` to `Arc<Queue>`
+ - Separate `Queue` and `Channel` types
+ - `Channel::with()` for storing additional data within the internal `Arc`
+ - `Queue::with()` for storing additional data within
+ - `Deref` implementation for accessing additional use data within `Channel`
+ - `Deref` implementation for accessing additional use data within `Queue`
+
+### Changed
+ - Changed to lockless implementation (no more spinlocks)
+ - Old `Channel` type is now called `Queue`
+ - `Future`, `Notifier` and `Stream` are now implemented directly on `Channel`
+   rather than on a shared reference.
+ - Bump MSRV to Rust 1.65
+
+### Removed
+ - `Chan`, `Stream`, `WeakChan` and `WeakStream` type aliases
+
 ## [0.8.0] - 2022-09-28
 ### Added
  - `Chan`, `Stream`, `WeakChan`, `WeakStream` type aliases
