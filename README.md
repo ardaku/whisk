@@ -8,7 +8,7 @@
 [![Crates.io](https://img.shields.io/crates/l/whisk)](https://github.com/ardaku/whisk/search?l=Text&q=license)
 [![Docs.rs](https://docs.rs/whisk/badge.svg)](https://docs.rs/whisk/)
 
-#### Simple and fast async channels
+#### Simple and fast lockless async channels
 Simple and fast async channels that can be used to implement futures, streams,
 notifiers, and actors.  Whisk is purposely kept small, implemented in under 500
 lines of Rust code, with zero dependencies (not including feature flags to
@@ -18,14 +18,14 @@ enable implementation of traits from other crates) - and also works on `no_std`!
 Whisk targets Rust 1.65 and later.
 
 ## Benchmarks
-Benchmarks for v0.8.0 actor on pasts runtime (compared to dynamic library):
+Benchmarks for v0.9.0 actor on pasts runtime (compared to dynamic library):
 
 ```
-Dynamic library: 6ns
-Whisk (2-thread): 4.029µs
-Flume (2-thread): 4.172µs
-Whisk (1-thread): 145ns
-Flume (1-thread): 247ns
+Dynamic library: 5ns
+Whisk (2-thread): 4.599µs
+Flume (2-thread): 4.629µs
+Whisk (1-thread): 288ns
+Flume (1-thread): 329ns
 ```
 
 These aren't very well done benchmarks, but in my testing whisk is always faster
