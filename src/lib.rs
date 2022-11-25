@@ -107,12 +107,6 @@ use self::wake_list::WakeHandle;
 /// and tasks.
 ///
 /// Implemented as a multi-producer/multi-consumer queue of size 1.
-///
-/// Enable the **`futures-core`** feature for `&Queue` to implement
-/// [`Stream`](futures_core::Stream) (generic `T` must be `Option<Item>`).
-///
-/// Enable the **`pasts`** feature for `&Queue` to implement
-/// [`Notifier`](pasts::Notifier).
 pub struct Queue<T = (), U: ?Sized = ()> {
     /// Data in transit
     data: mutex::Mutex<T>,
@@ -141,7 +135,7 @@ impl<T, U: ?Sized + Default> Default for Queue<T, U> {
 }
 
 impl<T> Queue<T> {
-    /// Create a new channel.
+    /// Create a new queue.
     #[inline]
     pub const fn new() -> Self {
         Self::with(())
@@ -149,7 +143,7 @@ impl<T> Queue<T> {
 }
 
 impl<T, U> Queue<T, U> {
-    /// Create a new channel with associated data.
+    /// Create a new queue with associated data.
     #[inline]
     pub const fn with(user_data: U) -> Self {
         Self {
@@ -160,17 +154,23 @@ impl<T, U> Queue<T, U> {
 }
 
 impl<T, U: ?Sized> Queue<T, U> {
-    /// Send a message on this channel.
+    /// Send a message on this queue.
     #[inline(always)]
     pub async fn send(&self, message: T) {
         Message(self, Cell::new(Some(message)), WakeHandle::new()).await
     }
 
-    /// Receive a message from this channel.
+    /// Receive a message from this queue.
     #[inline(always)]
     pub async fn recv(&self) -> T {
         let mut wh = WakeHandle::new();
         future::poll_fn(|cx| self.data.take(cx, &mut wh)).await
+    }
+}
+
+impl<T, U: ?Sized> From<Channel<T, U>> for Arc<Queue<T, U>> {
+    fn from(channel: Channel<T, U>) -> Self {
+        channel.0
     }
 }
 
@@ -206,6 +206,12 @@ impl<T, U: ?Sized> Future for Message<'_, T, U> {
 }
 
 /// An MPMC channel with both send and receive capabilities
+///
+/// Enable the **`futures-core`** feature for `Channel` to implement
+/// [`Stream`](futures_core::Stream) (generic `T` must be `Option<Item>`).
+///
+/// Enable the **`pasts`** feature for `Channel` to implement
+/// [`Notifier`](pasts::Notifier).
 pub struct Channel<T = (), U: ?Sized = ()>(Arc<Queue<T, U>>, WakeHandle);
 
 impl<T> Channel<T> {
@@ -220,7 +226,7 @@ impl<T, U> Channel<T, U> {
     /// Create a new channel with associated data.
     #[inline(always)]
     pub fn with(user_data: U) -> Self {
-        Self::from_inner(Arc::new(Queue::with(user_data)))
+        Self::from(Arc::new(Queue::with(user_data)))
     }
 }
 
@@ -236,16 +242,10 @@ impl<T, U: ?Sized> Channel<T, U> {
     pub async fn recv(&self) -> T {
         self.0.recv().await
     }
+}
 
-    /// Get the internal [`Arc`] out from the channel.
-    #[inline(always)]
-    pub fn into_inner(self) -> Arc<Queue<T, U>> {
-        self.0
-    }
-
-    /// Create a new channel from a [`Queue`] wrapped in an [`Arc`].
-    #[inline(always)]
-    pub fn from_inner(inner: Arc<Queue<T, U>>) -> Self {
+impl<T, U: ?Sized> From<Arc<Queue<T, U>>> for Channel<T, U> {
+    fn from(inner: Arc<Queue<T, U>>) -> Self {
         Self(inner, WakeHandle::new())
     }
 }
