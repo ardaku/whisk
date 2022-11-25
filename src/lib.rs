@@ -86,8 +86,8 @@
 )]
 #![deny(unsafe_code)]
 
-extern crate std;
 extern crate alloc;
+extern crate std;
 
 #[allow(unsafe_code)]
 mod mutex;
@@ -99,13 +99,10 @@ use core::{
     cell::Cell,
     future::{self, Future},
     pin::Pin,
-    task::{
-        Context,
-        Poll::{self, Pending, Ready},
-    },
+    task::{Context, Poll},
 };
 
-use self::wake_list::{WakeHandle, WakeList};
+use self::wake_list::WakeHandle;
 
 /// A `Queue` can send messages to itself, and can be shared between threads
 /// and tasks.
@@ -118,12 +115,8 @@ use self::wake_list::{WakeHandle, WakeList};
 /// Enable the **`pasts`** feature for `&Queue` to implement
 /// [`Notifier`](pasts::Notifier).
 pub struct Queue<T = (), U: ?Sized = ()> {
-    /// Receive wakers
-    recv: WakeList,
-    /// Send wakers
-    send: WakeList,
     /// Data in transit
-    data: mutex::Mutex<Option<T>>,
+    data: mutex::Mutex<T>,
     /// User data
     user: U,
 }
@@ -161,9 +154,7 @@ impl<T, U> Queue<T, U> {
     #[inline]
     pub const fn with(user_data: U) -> Self {
         Self {
-            data: mutex::Mutex::new(None),
-            send: wake_list::WakeList::new(),
-            recv: wake_list::WakeList::new(),
+            data: mutex::Mutex::new(),
             user: user_data,
         }
     }
@@ -176,49 +167,11 @@ impl<T, U: ?Sized> Queue<T, U> {
         Message(self, Cell::new(Some(message)), WakeHandle::new()).await
     }
 
-    // Internal asynchronous receive implementation
-    fn poll_internal(
-        &self,
-        cx: &mut Context<'_>,
-        wake: &mut WakeHandle,
-    ) -> Poll<T> {
-        let waker = cx.waker();
-        let poll = self.data.try_with(|inner| {
-            if let Some(shared) = inner {
-                if let Some(output) = shared.take() {
-                    Ready(output)
-                } else {
-                    // Nothing is available yet, register waker for when it is
-                    // Registration happens while owned to avoid data race
-                    wake.register(&self.recv, waker.clone());
-                    Pending
-                }
-            } else {
-                // Data is contended, register and try again
-                wake.register(&self.recv, waker.clone());
-
-                core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-                self.data.try_with(|inner| {
-                    if let Some(shared) = inner {
-                        if let Some(output) = shared.take() {
-                            // Unregister
-                            *wake = WakeHandle::new();
-                            return Ready(output);
-                        }
-                    }
-                    std::println!("ContendPendA");
-                    Pending
-                })
-            }
-        });
-
-        // Any waking happens after the data is released
-        poll.map(|x| {
-            // Now that space is available, possibly wake a sender
-            std::println!("Waking sender");
-            self.send.wake_one();
-            x
-        })
+    /// Receive a message from this channel.
+    #[inline(always)]
+    pub async fn recv(&self) -> T {
+        let mut wh = WakeHandle::new();
+        future::poll_fn(|cx| self.data.take(cx, &mut wh)).await
     }
 }
 
@@ -227,12 +180,6 @@ struct Message<'a, T, U: ?Sized>(&'a Queue<T, U>, Cell<Option<T>>, WakeHandle);
 
 #[allow(unsafe_code)]
 impl<T, U: ?Sized> Message<'_, T, U> {
-    #[inline(always)]
-    fn pin_get(self: Pin<&Self>) -> Pin<&Cell<Option<T>>> {
-        // This is okay because `1` is pinned when `self` is.
-        unsafe { self.map_unchecked(|s| &s.1) }
-    }
-
     #[inline(always)]
     fn pin_get_wh(self: Pin<&mut Self>) -> Pin<&mut WakeHandle> {
         // This is okay because `1` is pinned when `self` is.
@@ -248,66 +195,14 @@ impl<T, U: ?Sized> Future for Message<'_, T, U> {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Self::Output> {
-        let waker = cx.waker();
-        let poll = self.0.data.try_with(|inner| {
-            if let Some(shared) = inner {
-                if shared.is_none() {
-                    // Buffer has space, write to it
-                    *shared = self.as_ref().pin_get().take();
-                    Ready(())
-                } else {
-                    // Registering while locked to avoid data race
-                    let mut wh = WakeHandle::new();
-                    core::mem::swap(
-                        &mut wh,
-                        self.as_mut().pin_get_wh().get_mut(),
-                    );
-                    wh.register(&self.0.send, waker.clone());
-                    core::mem::swap(
-                        &mut wh,
-                        self.as_mut().pin_get_wh().get_mut(),
-                    );
-                    Pending
-                }
-            } else {
-                // Data is contended, register and try again
-                let mut wh = WakeHandle::new();
-                core::mem::swap(&mut wh, self.as_mut().pin_get_wh().get_mut());
-                wh.register(&self.0.send, waker.clone());
-                core::mem::swap(&mut wh, self.as_mut().pin_get_wh().get_mut());
+        let mut wh = WakeHandle::new();
+        core::mem::swap(&mut wh, self.as_mut().pin_get_wh().get_mut());
 
-                core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        let ret = self.0.data.store(&self.1, cx, &mut wh);
 
-                self.0.data.try_with(|inner| {
-                    if let Some(shared) = inner {
-                        if shared.is_none() {
-                            // Buffer has space, write to it
-                            *shared = self.as_ref().pin_get().take();
-                            // Unregister
-                            let mut wh = WakeHandle::new();
-                            core::mem::swap(
-                                &mut wh,
-                                self.as_mut().pin_get_wh().get_mut(),
-                            );
-                            return Ready(());
-                        } else {
-                            std::println!("ContendPend2 b");
-                        }
-                    } else {
-                        std::println!("ContendPend3 b");
-                    }
+        core::mem::swap(&mut wh, self.as_mut().pin_get_wh().get_mut());
 
-                    Pending
-                })
-            }
-        });
-
-        // Any waking happens after the data is released
-        poll.map(|()| {
-            std::println!("Waking receiver");
-            // Now that data has been written, possibly wake a receiver
-            self.0.recv.wake_one();
-        })
+        ret
     }
 }
 
@@ -340,8 +235,7 @@ impl<T, U: ?Sized> Channel<T, U> {
     /// Receive a message from this channel.
     #[inline(always)]
     pub async fn recv(&self) -> T {
-        let mut wh = WakeHandle::new();
-        future::poll_fn(|cx| self.0.poll_internal(cx, &mut wh)).await
+        self.0.recv().await
     }
 
     /// Get the internal [`Arc`] out from the channel.
@@ -389,7 +283,7 @@ impl<T, U: ?Sized> Future for Channel<T, U> {
     #[inline(always)]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<T> {
         let this = self.get_mut();
-        this.0.poll_internal(cx, &mut this.1)
+        this.0.data.take(cx, &mut this.1)
     }
 }
 
@@ -400,7 +294,7 @@ impl<T, U: ?Sized> pasts::Notifier for Channel<T, U> {
     #[inline(always)]
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<T> {
         let this = self.get_mut();
-        this.0.poll_internal(cx, &mut this.1)
+        this.0.data.take(cx, &mut this.1)
     }
 }
 
@@ -414,6 +308,6 @@ impl<T, U: ?Sized> futures_core::Stream for Channel<Option<T>, U> {
         cx: &mut Context<'_>,
     ) -> Poll<Option<T>> {
         let this = self.get_mut();
-        this.0.poll_internal(cx, &mut this.1)
+        this.0.data.take(cx, &mut this.1)
     }
 }
