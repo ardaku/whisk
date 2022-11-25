@@ -87,7 +87,6 @@
 #![deny(unsafe_code)]
 
 extern crate alloc;
-extern crate std;
 
 #[allow(unsafe_code)]
 mod mutex;
