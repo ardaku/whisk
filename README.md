@@ -10,7 +10,7 @@
 
 #### Simple and fast async channels
 Simple and fast async channels that can be used to implement futures, streams,
-notifiers, and actors.  Whisk is purposely kept small, implemented in under 300
+notifiers, and actors.  Whisk is purposely kept small, implemented in under 500
 lines of Rust code, with zero dependencies (not including feature flags to
 enable implementation of traits from other crates) - and also works on `no_std`!
 
