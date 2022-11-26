@@ -16,6 +16,13 @@ use crate::{wake_list::WakeHandle, Queue};
 /// [`Notifier`](pasts::Notifier).
 pub struct Channel<T = (), U: ?Sized = ()>(Arc<Queue<T, U>>, WakeHandle);
 
+impl<T, U: ?Sized> Drop for Channel<T, U> {
+    fn drop(&mut self) {
+        // Drop to avoid use after free
+        self.1 = WakeHandle::new();
+    }
+}
+
 impl<T> Channel<T> {
     /// Create a new channel.
     #[inline(always)]
@@ -115,6 +122,6 @@ impl<T, U: ?Sized> From<Arc<Queue<T, U>>> for Channel<T, U> {
 
 impl<T, U: ?Sized> From<Channel<T, U>> for Arc<Queue<T, U>> {
     fn from(channel: Channel<T, U>) -> Self {
-        channel.0
+        channel.0.clone()
     }
 }

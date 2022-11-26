@@ -17,10 +17,10 @@ fn main() {
                 println!("Sending...");
                 channel.send(Some(1)).await;
                 let weak: Weak<Queue<_>> = Arc::downgrade(&channel.into());
-                if Weak::strong_count(&weak) == 1 {
-                    if ONCE.fetch_and(false, Ordering::Relaxed) {
-                        weak.upgrade().unwrap().send(None).await;
-                    }
+                if Weak::strong_count(&weak) == 1
+                    && ONCE.fetch_and(false, Ordering::Relaxed)
+                {
+                    weak.upgrade().unwrap().send(None).await;
                 }
             })
         });
