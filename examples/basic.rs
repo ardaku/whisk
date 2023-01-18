@@ -16,13 +16,15 @@ async fn worker_main(commands: Channel<Option<Cmd>>) {
     println!("Worker stopping…");
 }
 
-async fn tasker_main() {
+// Call into executor of your choice
+#[async_main::async_main]
+async fn main(_spawner: impl async_main::Spawn) {
     // Create worker on new thread
     println!("Spawning worker…");
     let channel = Channel::new();
     let worker_task = worker_main(channel.clone());
     let worker_thread =
-        std::thread::spawn(|| pasts::Executor::default().spawn(worker_task));
+        std::thread::spawn(|| pasts::Executor::default().block_on(worker_task));
 
     // Do an addition
     println!("Sending command…");
@@ -39,9 +41,4 @@ async fn tasker_main() {
 
     worker_thread.join().unwrap();
     println!("Worker thread joined");
-}
-
-// Call into executor of your choice
-fn main() {
-    pasts::Executor::default().spawn(tasker_main())
 }

@@ -37,7 +37,7 @@
 //!     let channel = Channel::new();
 //!     let worker_task = worker_main(channel.clone());
 //!     let worker_thread =
-//!         std::thread::spawn(|| pasts::Executor::default().spawn(worker_task));
+//!         std::thread::spawn(|| pasts::Executor::default().block_on(worker_task));
 //!
 //!     // Do an addition
 //!     println!("Sending command…");
@@ -57,9 +57,9 @@
 //! }
 //!
 //! # #[ntest::timeout(1000)]
-//! // Call into executor of your choice
 //! fn main() {
-//!     pasts::Executor::default().spawn(tasker_main())
+//!     // Call into executor of your choice
+//!     pasts::Executor::default().block_on(tasker_main());
 //! }
 //! ```
 
