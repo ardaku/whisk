@@ -18,14 +18,14 @@ enable implementation of traits from other crates) - and also works on `no_std`!
 Whisk targets Rust 1.65 and later.
 
 ## Benchmarks
-Benchmarks for v0.9.0 actor on pasts runtime (compared to dynamic library):
+Benchmarks for v0.10.0 actor on pasts runtime (compared to dynamic library):
 
 ```
-Dynamic library: 5ns
-Whisk (2-thread): 4.599µs
-Flume (2-thread): 4.629µs
-Whisk (1-thread): 288ns
-Flume (1-thread): 329ns
+Dynamic library: 6ns
+Whisk (2-thread): 4.396µs
+Flume (2-thread): 4.594µs
+Whisk (1-thread): 277ns
+Flume (1-thread): 325ns
 ```
 
 These aren't very well done benchmarks, but in my testing whisk is always faster

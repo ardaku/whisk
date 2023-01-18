@@ -10,7 +10,7 @@
 
 [package]
 name = "whisk"
-version = "0.9.1"
+version = "0.10.0"
 license = "Apache-2.0 OR BSL-1.0 OR MIT"
 description = "Simple and fast lockless async channels"
 repository = "https://github.com/ardaku/whisk"
@@ -38,6 +38,7 @@ version = "0.13"
 optional = true
 
 [dev-dependencies]
+async_main = { version = "0.2", features = ["pasts"] }
 pasts = "0.13"
 dl_api = "0.4"
 futures = "0.3"

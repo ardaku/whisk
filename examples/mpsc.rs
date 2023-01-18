@@ -13,7 +13,7 @@ fn main() {
     for _ in 0..24 {
         let channel = channel.clone();
         std::thread::spawn(|| {
-            pasts::Executor::default().spawn(async move {
+            pasts::Executor::default().block_on(async move {
                 println!("Sending...");
                 channel.send(Some(1)).await;
                 let weak: Weak<Queue<_>> = Arc::downgrade(&channel.into());
@@ -25,7 +25,7 @@ fn main() {
             })
         });
     }
-    executor.spawn(async move {
+    executor.block_on(async move {
         let mut c = 0;
         while let Some(v) = channel.recv().await {
             println!("Received one.");
