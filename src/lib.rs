@@ -31,7 +31,7 @@
 //!     println!("Worker stopping…");
 //! }
 //!
-//! async fn async_main() {
+//! async fn tasker_main() {
 //!     // Create worker on new thread
 //!     println!("Spawning worker…");
 //!     let channel = Channel::new();
@@ -59,7 +59,7 @@
 //! # #[ntest::timeout(1000)]
 //! fn main() {
 //!     // Call into executor of your choice
-//!     pasts::Executor::default().block_on(async_main());
+//!     pasts::Executor::default().block_on(tasker_main());
 //! }
 //! ```
 
