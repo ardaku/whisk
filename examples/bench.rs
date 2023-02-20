@@ -1,7 +1,7 @@
 use std::{ffi::CStr, time::Instant};
 
 use dl_api::manual::DlApi;
-use pasts::{prelude::*, Executor};
+use pasts::Executor;
 use whisk::Channel;
 
 enum Cmd {
@@ -56,7 +56,7 @@ async fn tasker_single(executor: &Executor) {
     // Create worker on new thread
     let chan = Channel::new();
     let join = Channel::new();
-    executor.spawn({
+    executor.spawn_boxed({
         let tasker = chan.clone();
         let join = join.clone();
         async move {
@@ -119,7 +119,7 @@ async fn flume_single(executor: &Executor) {
     // Create worker on new thread
     let join = Channel::new();
     let (worker, tasker) = flume::bounded(1);
-    executor.spawn({
+    executor.spawn_boxed({
         let join = join.clone();
         async move {
             worker_flume(tasker).await;

@@ -90,7 +90,7 @@ impl<T, U: ?Sized> Future for Channel<T, U> {
 }
 
 #[cfg(feature = "pasts")]
-impl<T, U: ?Sized> pasts::Notifier for Channel<T, U> {
+impl<T, U: ?Sized> pasts::notify::Notify for Channel<T, U> {
     type Event = T;
 
     #[inline(always)]
