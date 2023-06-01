@@ -29,6 +29,10 @@ readme = "README.md"
 edition = "2021"
 rust-version = "1.65"
 
+[[example]]
+name = "tokio"
+required-features = ["futures-core"]
+
 [dependencies.futures-core]
 version = "0.3"
 optional = true
@@ -39,12 +43,18 @@ optional = true
 
 [dev-dependencies]
 async_main = { version = "0.3", features = ["pasts"] }
-pasts = "0.14"
 dl_api = "0.4"
-futures = "0.3"
 flume = "0.10"
-ntest = "0.9"
+futures = "0.3"
 libm = "0.2"
+ntest = "0.9"
+pasts = "0.14"
+tokio-stream = "0.1"
+
+[dev-dependencies.tokio]
+version = "1.28"
+default-features = false
+features = ["rt-multi-thread", "macros"]
 
 [features]
 default = []
