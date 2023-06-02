@@ -3,7 +3,7 @@
 //! with `rustc 1.72.0-nightly (871b59520 2023-05-31)`).
 //!
 //! ```shell
-//! cargo +nightly run --release --example nostd --features=pasts
+//! cargo +nightly run
 //! ```
 
 #![no_std]
