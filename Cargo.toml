@@ -10,13 +10,13 @@
 
 [package]
 name = "whisk"
-version = "0.11.0"
+version = "0.12.0"
 license = "Apache-2.0 OR BSL-1.0 OR MIT"
 description = "Simple and fast lockless async channels"
 repository = "https://github.com/ardaku/whisk"
 documentation = "https://docs.rs/whisk"
 homepage = "https://github.com/ardaku/whisk/blob/stable/CHANGELOG.md"
-include = ["README.md", "src/*"]
+include = ["README.md", "src/*", "examples/*"]
 categories = [
     "asynchronous",
     "concurrency",
@@ -33,23 +33,33 @@ rust-version = "1.65"
 name = "tokio"
 required-features = ["futures-core"]
 
+[[example]]
+name = "nostd"
+required-features = ["pasts"]
+
 [dependencies.futures-core]
 version = "0.3"
 optional = true
+default-features = false
 
 [dependencies.pasts]
 version = "0.14"
 optional = true
+default-features = false
 
 [dev-dependencies]
-async_main = { version = "0.3", features = ["pasts"] }
+async_main = { version = "0.4", features = ["pasts"] }
 dl_api = "0.4"
 flume = "0.10"
 futures = "0.3"
 libm = "0.2"
 ntest = "0.9"
-pasts = "0.14"
+rlsf = "0.2"
 tokio-stream = "0.1"
+
+[dev-dependencies.pasts]
+version = "0.14"
+default-features = false
 
 [dev-dependencies.tokio]
 version = "1.28"

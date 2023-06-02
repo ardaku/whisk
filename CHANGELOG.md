@@ -4,6 +4,11 @@ All notable changes to `whisk` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://github.com/AldaronLau/semver).
 
+## [0.12.0] - 2023-06-02
+### Fixed
+ - Default features being pulled in for `pasts` and `futures-core` optional
+   dependencies when enabled
+
 ## [0.11.0] - 2023-02-19
 ### Changed
  - Update pasts to 0.14.x
