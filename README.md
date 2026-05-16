@@ -31,13 +31,13 @@ library) with Rust 1.78.0:
 
 ## MSRV
 
-The current MSRV is Rust 1.70.
+The current MSRV is Rust 1.85.
 
 MSRV is updated according to the [Ardaku MSRV guidelines].
 
 ## License
 
-Copyright © 2022-2024 The Whisk Crate Contributor(s)
+Copyright © 2022-2026 The Whisk Crate Contributor(s)
 
 Licensed under any of
  - Apache License, Version 2.0, ([LICENSE_APACHE] or

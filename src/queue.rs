@@ -32,7 +32,7 @@ impl<T, U: ?Sized> core::ops::Deref for Queue<T, U> {
     }
 }
 
-impl<T, U: ?Sized + Default> Default for Queue<T, U> {
+impl<T, U: Default> Default for Queue<T, U> {
     fn default() -> Self {
         Self::with(U::default())
     }

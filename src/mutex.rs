@@ -139,10 +139,9 @@ impl<T> Mutex<T> {
         }
 
         // Take from inner data
-        let ret = if let Some(data) = unsafe { (*self.data.get()).take() } {
-            Poll::Ready(data)
-        } else {
-            Poll::Pending
+        let ret = match unsafe { (*self.data.get()).take() } {
+            Some(data) => Poll::Ready(data),
+            _ => Poll::Pending,
         };
 
         // Release lock

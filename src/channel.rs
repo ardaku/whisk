@@ -65,7 +65,7 @@ impl<T, U: ?Sized> core::fmt::Debug for Channel<T, U> {
     }
 }
 
-impl<T, U: ?Sized + Default> Default for Channel<T, U> {
+impl<T, U: Default> Default for Channel<T, U> {
     fn default() -> Self {
         Self::with(U::default())
     }
@@ -91,7 +91,10 @@ impl<T, U: ?Sized> Future for Channel<T, U> {
 
 #[cfg(feature = "event_iterator")]
 impl<T, U: ?Sized> event_iterator::EventIterator for Channel<T, U> {
-    type Event<'me> = T where Self: 'me;
+    type Event<'me>
+        = T
+    where
+        Self: 'me;
 
     #[inline(always)]
     fn poll_next(
