@@ -1,4 +1,4 @@
-use std::{ffi::CStr, time::Instant};
+use std::time::Instant;
 
 use dl_api::manual::DlApi;
 use pasts::Executor;
@@ -152,15 +152,9 @@ async fn flume_single(executor: &Executor) {
 }
 
 async fn dyn_lib() {
-    let dl_api =
-        DlApi::new(CStr::from_bytes_with_nul(b"libm.so.6\0").unwrap()).unwrap();
-    let cosf: unsafe extern "C" fn(f32) -> f32 = unsafe {
-        std::mem::transmute(
-            dl_api
-                .get(CStr::from_bytes_with_nul(b"cosf\0").unwrap())
-                .unwrap(),
-        )
-    };
+    let dl_api = DlApi::new(c"libm.so.6").unwrap();
+    let cosf: unsafe extern "C" fn(f32) -> f32 =
+        unsafe { std::mem::transmute(dl_api.get(c"cosf").unwrap()) };
 
     for _ in 1..=1024 {
         unsafe {
