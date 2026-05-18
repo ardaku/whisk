@@ -47,9 +47,9 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
 name = "event_iterator"
-version = "0.1.0"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eaf8de2b62324f0a6350d1a8c64d07066635ff1ee5a1470f2bbd4f9af02cfb69"
+checksum = "e2aa007899341db02e82d8293152e035b40835362cb87a0923b35a36a2bcdf84"
 
 [[package]]
 name = "flume"
