@@ -5,7 +5,7 @@ use core::{
     task::{Context, Poll},
 };
 
-use crate::{wake_list::WakeHandle, Queue};
+use crate::{Queue, wake_list::WakeHandle};
 
 /// An MPMC channel with both send and receive capabilities
 ///
