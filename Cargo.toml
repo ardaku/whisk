@@ -23,7 +23,7 @@ categories = [
 ]
 keywords = ["channel", "actor", "mpmc", "notifier", "event_iterator"]
 readme = "README.md"
-edition = "2021"
+edition = "2024"
 rust-version = "1.95"
 
 [[example]]
