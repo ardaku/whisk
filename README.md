@@ -31,7 +31,7 @@ library) with Rust 1.78.0:
 
 ## MSRV
 
-The current MSRV is Rust 1.85.
+The current MSRV is Rust 1.95.
 
 MSRV is updated according to the [Ardaku MSRV guidelines].
 

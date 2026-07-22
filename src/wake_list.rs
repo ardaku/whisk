@@ -55,21 +55,19 @@ impl WakeNode {
     /// Slots can be Empty, Ready or Waking (If Waking, wakes immediately)
     fn register(&self, waker: Waker) {
         // Attempt to clear first slot and begin registering
-        let r = self
-            .state
-            .fetch_update(SeqCst, SeqCst, |state| match state {
-                // Switch to registering state
-                x if x == WakeState::Empty as usize => {
-                    Some(WakeState::Registering as usize)
-                }
-                // Switch to registering state, dropping previous waker
-                x if x == WakeState::Ready as usize => {
-                    Some(WakeState::Registering as usize)
-                }
-                // Contention with waking, re-wake immediately
-                x if x == WakeState::Waking as usize => None,
-                _ => unreachable!(),
-            });
+        let r = self.state.try_update(SeqCst, SeqCst, |state| match state {
+            // Switch to registering state
+            x if x == WakeState::Empty as usize => {
+                Some(WakeState::Registering as usize)
+            }
+            // Switch to registering state, dropping previous waker
+            x if x == WakeState::Ready as usize => {
+                Some(WakeState::Registering as usize)
+            }
+            // Contention with waking, re-wake immediately
+            x if x == WakeState::Waking as usize => None,
+            _ => unreachable!(),
+        });
 
         // Set waker and mark ready
         match r {
@@ -84,7 +82,7 @@ impl WakeNode {
 
                 // Finish, checking if canceled
                 let r =
-                    self.state.fetch_update(
+                    self.state.try_update(
                         SeqCst,
                         SeqCst,
                         |state| match state {
@@ -112,7 +110,7 @@ impl WakeNode {
     fn wake(&self) -> Result<(), ()> {
         let r = self
             .state
-            .fetch_update(SeqCst, SeqCst, |state| match state {
+            .try_update(SeqCst, SeqCst, |state| match state {
                 // Ready to be awoken
                 x if x == WakeState::Ready as usize => {
                     Some(WakeState::Waking as usize)
@@ -134,7 +132,7 @@ impl WakeNode {
 
         // Update state
         self.state
-            .fetch_update(SeqCst, SeqCst, |state| match state {
+            .try_update(SeqCst, SeqCst, |state| match state {
                 x if x == WakeState::Waking as usize => {
                     Some(WakeState::Empty as usize)
                 }
