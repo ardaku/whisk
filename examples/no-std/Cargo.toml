@@ -4,12 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-rlsf = "0.2"
+rlsf = "0.2.2"
 
 [dependencies.pasts]
-version = "0.14"
+version = "0.14.3"
 default-features = false
 
 [dependencies.whisk]
-version = "0.12"
+version = "0.13"
 features = ["event_iterator"]

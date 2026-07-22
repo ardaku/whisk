@@ -32,29 +32,29 @@ required-features = ["futures_core_3"]
 
 [dependencies.futures_core_3]
 package = "futures-core"
-version = "0.3"
+version = "0.3.33"
 optional = true
 default-features = false
 
 [dependencies.event_iterator]
-version = "0.1"
+version = "0.2.2"
 optional = true
 
 [dev-dependencies]
-async_main = { version = "0.4", features = ["pasts"] }
-dl_api = "0.4"
-flume = "0.11"
-futures = "0.3"
-libm = "0.2"
-ntest = "0.9"
-tokio-stream = "0.1"
+async_main = { version = "0.4.0", features = ["pasts"] }
+dl_api = "0.4.0"
+flume = "0.12.0"
+futures = "0.3.33"
+libm = "0.2.16"
+ntest = "0.9.5"
+tokio-stream = "0.1.18"
 
 [dev-dependencies.pasts]
-version = "0.14"
+version = "0.14.3"
 default-features = false
 
 [dev-dependencies.tokio]
-version = "1.28"
+version = "1.53.1"
 default-features = false
 features = ["rt-multi-thread", "macros"]
 
