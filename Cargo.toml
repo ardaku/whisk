@@ -46,7 +46,7 @@ dl_api = "0.4.0"
 flume = "0.12.0"
 futures = "0.3.33"
 libm = "0.2.16"
-ntest = "0.9.5"
+ntest = "0.10.0"
 tokio-stream = "0.1.18"
 
 [dev-dependencies.pasts]
